@@ -4,6 +4,7 @@
 struct repository;
 struct strbuf;
 struct string_list;
+struct worktree;
 
 /*
  * The result to all functions which return statically allocated memory may be
@@ -22,12 +23,6 @@ const char *mkpath(const char *fmt, ...)
  */
 char *mkpathdup(const char *fmt, ...)
 	__attribute__((format (printf, 1, 2)));
-
-/*
- * Construct a path and place the result in the provided buffer `buf`.
- */
-char *mksnpath(char *buf, size_t n, const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
 
 /*
  * The `git_common_path` family of functions will construct a path into a
@@ -86,6 +81,14 @@ void strbuf_repo_git_path(struct strbuf *sb,
  */
 const char *git_path(const char *fmt, ...)
 	__attribute__((format (printf, 1, 2)));
+
+/*
+ * Similar to git_path() but can produce paths for a specified
+ * worktree instead of current one
+ */
+const char *worktree_git_path(const struct worktree *wt,
+			      const char *fmt, ...)
+	__attribute__((format (printf, 2, 3)));
 
 /*
  * Return a path into the main repository's (the_repository) git directory.
@@ -179,7 +182,6 @@ const char *git_path_fetch_head(struct repository *r);
 const char *git_path_shallow(struct repository *r);
 
 int ends_with_path_components(const char *path, const char *components);
-int validate_headref(const char *ref);
 
 int calc_shared_perm(int mode);
 int adjust_shared_perm(const char *path);

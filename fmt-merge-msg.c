@@ -447,7 +447,7 @@ static void fmt_merge_msg_title(struct strbuf *out,
 				const char *current_branch)
 {
 	int i = 0;
-	char *sep = "";
+	const char *sep = "";
 
 	strbuf_addstr(out, "Merge ");
 	for (i = 0; i < srcs.nr; i++) {
@@ -661,7 +661,9 @@ int fmt_merge_msg(struct strbuf *in, struct strbuf *out,
 
 	/* learn the commit that we merge into and the current branch name */
 	current_branch = current_branch_to_free =
-		resolve_refdup("HEAD", RESOLVE_REF_READING, &head_oid, NULL);
+		refs_resolve_refdup(get_main_ref_store(the_repository),
+				    "HEAD", RESOLVE_REF_READING, &head_oid,
+				    NULL);
 	if (!current_branch)
 		die("No current branch");
 

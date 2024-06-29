@@ -4,15 +4,11 @@ test_description='Test reffiles backend'
 
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+GIT_TEST_DEFAULT_REF_FORMAT=files
+export GIT_TEST_DEFAULT_REF_FORMAT
 
 TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
-
-if ! test_have_prereq REFFILES
-then
-	skip_all='skipping reffiles specific tests'
-	test_done
-fi
 
 test_expect_success 'setup' '
 	git commit --allow-empty -m Initial &&
@@ -428,7 +424,7 @@ test_expect_success SYMLINKS 'git branch -m with symlinked .git/refs' '
 	test_when_finished "rm -rf subdir" &&
 	git init --bare subdir &&
 
-	rm -rfv subdir/refs subdir/objects subdir/packed-refs &&
+	rm -rf subdir/refs subdir/objects subdir/packed-refs &&
 	ln -s ../.git/refs subdir/refs &&
 	ln -s ../.git/objects subdir/objects &&
 	ln -s ../.git/packed-refs subdir/packed-refs &&
@@ -470,6 +466,38 @@ test_expect_success POSIXPERM 'git reflog expire honors core.sharedRepository' '
 		false
 		;;
 	esac
+'
+
+test_expect_success SYMLINKS 'symref transaction supports symlinks' '
+	test_when_finished "git symbolic-ref -d TEST_SYMREF_HEAD" &&
+	git update-ref refs/heads/new @ &&
+	test_config core.prefersymlinkrefs true &&
+	cat >stdin <<-EOF &&
+	start
+	symref-create TEST_SYMREF_HEAD refs/heads/new
+	prepare
+	commit
+	EOF
+	git update-ref --no-deref --stdin <stdin &&
+	test_path_is_symlink .git/TEST_SYMREF_HEAD &&
+	test "$(test_readlink .git/TEST_SYMREF_HEAD)" = refs/heads/new
+'
+
+test_expect_success 'symref transaction supports false symlink config' '
+	test_when_finished "git symbolic-ref -d TEST_SYMREF_HEAD" &&
+	git update-ref refs/heads/new @ &&
+	test_config core.prefersymlinkrefs false &&
+	cat >stdin <<-EOF &&
+	start
+	symref-create TEST_SYMREF_HEAD refs/heads/new
+	prepare
+	commit
+	EOF
+	git update-ref --no-deref --stdin <stdin &&
+	test_path_is_file .git/TEST_SYMREF_HEAD &&
+	git symbolic-ref TEST_SYMREF_HEAD >actual &&
+	echo refs/heads/new >expect &&
+	test_cmp expect actual
 '
 
 test_done

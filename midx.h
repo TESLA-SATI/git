@@ -8,6 +8,25 @@ struct pack_entry;
 struct repository;
 struct bitmapped_pack;
 
+#define MIDX_SIGNATURE 0x4d494458 /* "MIDX" */
+#define MIDX_VERSION 1
+#define MIDX_BYTE_FILE_VERSION 4
+#define MIDX_BYTE_HASH_VERSION 5
+#define MIDX_BYTE_NUM_CHUNKS 6
+#define MIDX_BYTE_NUM_PACKS 8
+#define MIDX_HEADER_SIZE 12
+
+#define MIDX_CHUNK_ALIGNMENT 4
+#define MIDX_CHUNKID_PACKNAMES 0x504e414d /* "PNAM" */
+#define MIDX_CHUNKID_BITMAPPEDPACKS 0x42544d50 /* "BTMP" */
+#define MIDX_CHUNKID_OIDFANOUT 0x4f494446 /* "OIDF" */
+#define MIDX_CHUNKID_OIDLOOKUP 0x4f49444c /* "OIDL" */
+#define MIDX_CHUNKID_OBJECTOFFSETS 0x4f4f4646 /* "OOFF" */
+#define MIDX_CHUNKID_LARGEOFFSETS 0x4c4f4646 /* "LOFF" */
+#define MIDX_CHUNKID_REVINDEX 0x52494458 /* "RIDX" */
+#define MIDX_CHUNK_OFFSET_WIDTH (2 * sizeof(uint32_t))
+#define MIDX_LARGE_OFFSET_NEEDED 0x80000000
+
 #define GIT_TEST_MULTI_PACK_INDEX "GIT_TEST_MULTI_PACK_INDEX"
 #define GIT_TEST_MULTI_PACK_INDEX_WRITE_BITMAP \
 	"GIT_TEST_MULTI_PACK_INDEX_WRITE_BITMAP"
@@ -55,9 +74,13 @@ struct multi_pack_index {
 #define MIDX_WRITE_BITMAP_HASH_CACHE (1 << 3)
 #define MIDX_WRITE_BITMAP_LOOKUP_TABLE (1 << 4)
 
+#define MIDX_EXT_REV "rev"
+#define MIDX_EXT_BITMAP "bitmap"
+
 const unsigned char *get_midx_checksum(struct multi_pack_index *m);
 void get_midx_filename(struct strbuf *out, const char *object_dir);
-void get_midx_rev_filename(struct strbuf *out, struct multi_pack_index *m);
+void get_midx_filename_ext(struct strbuf *out, const char *object_dir,
+			   const unsigned char *hash, const char *ext);
 
 struct multi_pack_index *load_multi_pack_index(const char *object_dir, int local);
 int prepare_midx_pack(struct repository *r, struct multi_pack_index *m, uint32_t pack_int_id);

@@ -232,8 +232,10 @@ void load_ref_decorations(struct decoration_filter *filter, int flags)
 		}
 		decoration_loaded = 1;
 		decoration_flags = flags;
-		for_each_ref(add_ref_decoration, filter);
-		head_ref(add_ref_decoration, filter);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  add_ref_decoration, filter);
+		refs_head_ref(get_main_ref_store(the_repository),
+			      add_ref_decoration, filter);
 		for_each_commit_graft(add_graft_decoration, filter);
 	}
 }
@@ -277,7 +279,8 @@ static const struct name_decoration *current_pointed_by_HEAD(const struct name_d
 		return NULL;
 
 	/* Now resolve and find the matching current branch */
-	branch_name = resolve_ref_unsafe("HEAD", 0, NULL, &rru_flags);
+	branch_name = refs_resolve_ref_unsafe(get_main_ref_store(the_repository),
+					      "HEAD", 0, NULL, &rru_flags);
 	if (!branch_name || !(rru_flags & REF_ISSYMREF))
 		return NULL;
 
@@ -670,6 +673,51 @@ static void next_commentary_block(struct rev_info *opt, struct strbuf *sb)
 	opt->shown_dashes = 1;
 }
 
+static void show_diff_of_diff(struct rev_info *opt)
+{
+	if (!cmit_fmt_is_mail(opt->commit_format))
+		return;
+
+	if (opt->idiff_oid1) {
+		struct diff_queue_struct dq;
+
+		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
+		DIFF_QUEUE_CLEAR(&diff_queued_diff);
+
+		fprintf_ln(opt->diffopt.file, "\n%s", opt->idiff_title);
+		show_interdiff(opt->idiff_oid1, opt->idiff_oid2, 2,
+			       &opt->diffopt);
+
+		memcpy(&diff_queued_diff, &dq, sizeof(diff_queued_diff));
+	}
+
+	if (opt->rdiff1) {
+		struct diff_queue_struct dq;
+		struct diff_options opts;
+		struct range_diff_options range_diff_opts = {
+			.creation_factor = opt->creation_factor,
+			.dual_color = 1,
+			.diffopt = &opts
+		};
+
+		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
+		DIFF_QUEUE_CLEAR(&diff_queued_diff);
+
+		fprintf_ln(opt->diffopt.file, "\n%s", opt->rdiff_title);
+		/*
+		 * Pass minimum required diff-options to range-diff; others
+		 * can be added later if deemed desirable.
+		 */
+		repo_diff_setup(the_repository, &opts);
+		opts.file = opt->diffopt.file;
+		opts.use_color = opt->diffopt.use_color;
+		diff_setup_done(&opts);
+		show_range_diff(opt->rdiff1, opt->rdiff2, &range_diff_opts);
+
+		memcpy(&diff_queued_diff, &dq, sizeof(diff_queued_diff));
+	}
+}
+
 void show_log(struct rev_info *opt)
 {
 	struct strbuf msgbuf = STRBUF_INIT;
@@ -773,7 +821,7 @@ void show_log(struct rev_info *opt)
 			 */
 			show_reflog_message(opt->reflog_info,
 					    opt->commit_format == CMIT_FMT_ONELINE,
-					    &opt->date_mode,
+					    opt->date_mode,
 					    opt->date_mode_explicit);
 			if (opt->commit_format == CMIT_FMT_ONELINE)
 				return;
@@ -853,47 +901,6 @@ void show_log(struct rev_info *opt)
 	strbuf_release(&msgbuf);
 	free(ctx.notes_message);
 	free(ctx.after_subject);
-
-	if (cmit_fmt_is_mail(ctx.fmt) && opt->idiff_oid1) {
-		struct diff_queue_struct dq;
-
-		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
-		DIFF_QUEUE_CLEAR(&diff_queued_diff);
-
-		next_commentary_block(opt, NULL);
-		fprintf_ln(opt->diffopt.file, "%s", opt->idiff_title);
-		show_interdiff(opt->idiff_oid1, opt->idiff_oid2, 2,
-			       &opt->diffopt);
-
-		memcpy(&diff_queued_diff, &dq, sizeof(diff_queued_diff));
-	}
-
-	if (cmit_fmt_is_mail(ctx.fmt) && opt->rdiff1) {
-		struct diff_queue_struct dq;
-		struct diff_options opts;
-		struct range_diff_options range_diff_opts = {
-			.creation_factor = opt->creation_factor,
-			.dual_color = 1,
-			.diffopt = &opts
-		};
-
-		memcpy(&dq, &diff_queued_diff, sizeof(diff_queued_diff));
-		DIFF_QUEUE_CLEAR(&diff_queued_diff);
-
-		next_commentary_block(opt, NULL);
-		fprintf_ln(opt->diffopt.file, "%s", opt->rdiff_title);
-		/*
-		 * Pass minimum required diff-options to range-diff; others
-		 * can be added later if deemed desirable.
-		 */
-		repo_diff_setup(the_repository, &opts);
-		opts.file = opt->diffopt.file;
-		opts.use_color = opt->diffopt.use_color;
-		diff_setup_done(&opts);
-		show_range_diff(opt->rdiff1, opt->rdiff2, &range_diff_opts);
-
-		memcpy(&diff_queued_diff, &dq, sizeof(diff_queued_diff));
-	}
 }
 
 int log_tree_diff_flush(struct rev_info *opt)
@@ -1162,9 +1169,12 @@ int log_tree_commit(struct rev_info *opt, struct commit *commit)
 	}
 	if (opt->track_linear && !opt->linear && opt->reverse_output_stage)
 		fprintf(opt->diffopt.file, "\n%s\n", opt->break_bar);
+	if (shown)
+		show_diff_of_diff(opt);
 	opt->loginfo = NULL;
 	maybe_flush_or_die(opt->diffopt.file, "stdout");
 	opt->diffopt.no_free = no_free;
+
 	diff_free(&opt->diffopt);
 	return shown;
 }

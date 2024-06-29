@@ -116,7 +116,7 @@ static int decode_string(struct strbuf *dest, struct string_view in)
 	return start_len - in.len;
 }
 
-static int encode_string(char *str, struct string_view s)
+static int encode_string(const char *str, struct string_view s)
 {
 	struct string_view start = s;
 	int l = strlen(str);
@@ -159,6 +159,30 @@ int reftable_encode_key(int *restart, struct string_view dest,
 	return start.len - dest.len;
 }
 
+int reftable_decode_keylen(struct string_view in,
+			   uint64_t *prefix_len,
+			   uint64_t *suffix_len,
+			   uint8_t *extra)
+{
+	size_t start_len = in.len;
+	int n;
+
+	n = get_var_int(prefix_len, &in);
+	if (n < 0)
+		return -1;
+	string_view_consume(&in, n);
+
+	n = get_var_int(suffix_len, &in);
+	if (n <= 0)
+		return -1;
+	string_view_consume(&in, n);
+
+	*extra = (uint8_t)(*suffix_len & 0x7);
+	*suffix_len >>= 3;
+
+	return start_len - in.len;
+}
+
 int reftable_decode_key(struct strbuf *last_key, uint8_t *extra,
 			struct string_view in)
 {
@@ -167,18 +191,10 @@ int reftable_decode_key(struct strbuf *last_key, uint8_t *extra,
 	uint64_t suffix_len = 0;
 	int n;
 
-	n = get_var_int(&prefix_len, &in);
+	n = reftable_decode_keylen(in, &prefix_len, &suffix_len, extra);
 	if (n < 0)
 		return -1;
 	string_view_consume(&in, n);
-
-	n = get_var_int(&suffix_len, &in);
-	if (n <= 0)
-		return -1;
-	string_view_consume(&in, n);
-
-	*extra = (uint8_t)(suffix_len & 0x7);
-	suffix_len >>= 3;
 
 	if (in.len < suffix_len ||
 	    prefix_len > last_key->len)
@@ -953,9 +969,9 @@ done:
 	return REFTABLE_FORMAT_ERROR;
 }
 
-static int null_streq(char *a, char *b)
+static int null_streq(const char *a, const char *b)
 {
-	char *empty = "";
+	const char *empty = "";
 	if (!a)
 		a = empty;
 

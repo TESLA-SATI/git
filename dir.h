@@ -62,7 +62,6 @@ struct path_pattern {
 	 */
 	struct pattern_list *pl;
 
-	const char *pattern;
 	int patternlen;
 	int nowildcardlen;
 	const char *base;
@@ -74,6 +73,8 @@ struct path_pattern {
 	 * and from -1 decrementing for patterns from CLI args.
 	 */
 	int srcpos;
+
+	char pattern[FLEX_ARRAY];
 };
 
 /* used for hashmaps for cone patterns */
@@ -93,9 +94,6 @@ struct pattern_entry {
 struct pattern_list {
 	int nr;
 	int alloc;
-
-	/* remember pointer to exclude file contents so we can free() */
-	char *filebuf;
 
 	/* origin of list, e.g. path to filename, or descriptive string */
 	const char *src;
@@ -547,6 +545,13 @@ int fspathcmp(const char *a, const char *b);
 int fspatheq(const char *a, const char *b);
 int fspathncmp(const char *a, const char *b, size_t count);
 unsigned int fspathhash(const char *str);
+
+/*
+ * Reports whether paths collide. This may be because the paths differ only in
+ * case on a case-sensitive filesystem, or that one path refers to a symlink
+ * that collides with one of the parent directories of the other.
+ */
+int paths_collide(const char *a, const char *b);
 
 /*
  * The prefix part of pattern must not contains wildcards.

@@ -663,7 +663,7 @@ int start_command(struct child_process *cmd)
 	int need_in, need_out, need_err;
 	int fdin[2], fdout[2], fderr[2];
 	int failed_errno;
-	char *str;
+	const char *str;
 
 	/*
 	 * In case of errors we must keep the promise to close FDs
@@ -745,6 +745,8 @@ fail_pipe:
 			error_errno("cannot run %s", cmd->args.v[0]);
 		goto end_of_spawn;
 	}
+
+	trace_argv_printf(&argv.v[1], "trace: start_command:");
 
 	if (pipe(notify_pipe))
 		notify_pipe[0] = notify_pipe[1] = -1;
@@ -913,6 +915,7 @@ end_of_spawn:
 	else if (cmd->use_shell)
 		cmd->args.v = prepare_shell_cmd(&nargv, sargv);
 
+	trace_argv_printf(cmd->args.v, "trace: start_command:");
 	cmd->pid = mingw_spawnvpe(cmd->args.v[0], cmd->args.v,
 				  (char**) cmd->env.v,
 				  cmd->dir, fhin, fhout, fherr);
@@ -1753,7 +1756,8 @@ void run_processes_parallel(const struct run_process_parallel_opts *opts)
 
 	if (do_trace2)
 		trace2_region_enter_printf(tr2_category, tr2_label, NULL,
-					   "max:%d", opts->processes);
+					   "max:%"PRIuMAX,
+					   (uintmax_t)opts->processes);
 
 	pp_init(&pp, opts, &pp_sig);
 	while (1) {
@@ -1793,20 +1797,27 @@ void run_processes_parallel(const struct run_process_parallel_opts *opts)
 		trace2_region_leave(tr2_category, tr2_label, NULL);
 }
 
-int run_auto_maintenance(int quiet)
+int prepare_auto_maintenance(int quiet, struct child_process *maint)
 {
 	int enabled;
-	struct child_process maint = CHILD_PROCESS_INIT;
 
 	if (!git_config_get_bool("maintenance.auto", &enabled) &&
 	    !enabled)
 		return 0;
 
-	maint.git_cmd = 1;
-	maint.close_object_store = 1;
-	strvec_pushl(&maint.args, "maintenance", "run", "--auto", NULL);
-	strvec_push(&maint.args, quiet ? "--quiet" : "--no-quiet");
+	maint->git_cmd = 1;
+	maint->close_object_store = 1;
+	strvec_pushl(&maint->args, "maintenance", "run", "--auto", NULL);
+	strvec_push(&maint->args, quiet ? "--quiet" : "--no-quiet");
 
+	return 1;
+}
+
+int run_auto_maintenance(int quiet)
+{
+	struct child_process maint = CHILD_PROCESS_INIT;
+	if (!prepare_auto_maintenance(quiet, &maint))
+		return 0;
 	return run_command(&maint);
 }
 

@@ -3,7 +3,7 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
-#define USE_THE_INDEX_VARIABLE
+
 #include "builtin.h"
 #include "abspath.h"
 #include "config.h"
@@ -160,8 +160,9 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 			case 1: /* happy */
 				if (abbrev_ref) {
 					char *old = full;
-					full = shorten_unambiguous_ref(full,
-						abbrev_ref_strict);
+					full = refs_shorten_unambiguous_ref(get_main_ref_store(the_repository),
+									    full,
+									    abbrev_ref_strict);
 					free(old);
 				}
 				show_with_type(type, full);
@@ -599,9 +600,12 @@ static int opt_with_value(const char *arg, const char *opt, const char **value)
 static void handle_ref_opt(const char *pattern, const char *prefix)
 {
 	if (pattern)
-		for_each_glob_ref_in(show_reference, pattern, prefix, NULL);
+		refs_for_each_glob_ref_in(get_main_ref_store(the_repository),
+					  show_reference, pattern, prefix,
+					  NULL);
 	else
-		for_each_ref_in(prefix, show_reference, NULL);
+		refs_for_each_ref_in(get_main_ref_store(the_repository),
+				     prefix, show_reference, NULL);
 	clear_ref_exclusions(&ref_excludes);
 }
 
@@ -687,7 +691,6 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 	const char *name = NULL;
 	struct object_context unused;
 	struct strbuf buf = STRBUF_INIT;
-	const int hexsz = the_hash_algo->hexsz;
 	int seen_end_of_options = 0;
 	enum format_type format = FORMAT_DEFAULT;
 
@@ -863,8 +866,8 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				abbrev = strtoul(arg, NULL, 10);
 				if (abbrev < MINIMUM_ABBREV)
 					abbrev = MINIMUM_ABBREV;
-				else if (hexsz <= abbrev)
-					abbrev = hexsz;
+				else if ((int)the_hash_algo->hexsz <= abbrev)
+					abbrev = the_hash_algo->hexsz;
 				continue;
 			}
 			if (!strcmp(arg, "--sq")) {
@@ -898,7 +901,8 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 			if (!strcmp(arg, "--all")) {
-				for_each_ref(show_reference, NULL);
+				refs_for_each_ref(get_main_ref_store(the_repository),
+						  show_reference, NULL);
 				clear_ref_exclusions(&ref_excludes);
 				continue;
 			}
@@ -908,8 +912,14 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 			if (!strcmp(arg, "--bisect")) {
-				for_each_fullref_in("refs/bisect/bad", show_reference, NULL);
-				for_each_fullref_in("refs/bisect/good", anti_reference, NULL);
+				refs_for_each_fullref_in(get_main_ref_store(the_repository),
+							 "refs/bisect/bad",
+							 NULL, show_reference,
+							 NULL);
+				refs_for_each_fullref_in(get_main_ref_store(the_repository),
+							 "refs/bisect/good",
+							 NULL, anti_reference,
+							 NULL);
 				continue;
 			}
 			if (opt_with_value(arg, "--branches", &arg)) {
@@ -1049,8 +1059,8 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 			if (!strcmp(arg, "--shared-index-path")) {
 				if (repo_read_index(the_repository) < 0)
 					die(_("Could not read the index"));
-				if (the_index.split_index) {
-					const struct object_id *oid = &the_index.split_index->base_oid;
+				if (the_repository->index->split_index) {
+					const struct object_id *oid = &the_repository->index->split_index->base_oid;
 					const char *path = git_path("sharedindex.%s", oid_to_hex(oid));
 					print_path(path, prefix, format, DEFAULT_RELATIVE);
 				}

@@ -180,13 +180,51 @@ static void gc_config(void)
 	git_config(git_default_config, NULL);
 }
 
-struct maintenance_run_opts;
+enum schedule_priority {
+	SCHEDULE_NONE = 0,
+	SCHEDULE_WEEKLY = 1,
+	SCHEDULE_DAILY = 2,
+	SCHEDULE_HOURLY = 3,
+};
+
+static enum schedule_priority parse_schedule(const char *value)
+{
+	if (!value)
+		return SCHEDULE_NONE;
+	if (!strcasecmp(value, "hourly"))
+		return SCHEDULE_HOURLY;
+	if (!strcasecmp(value, "daily"))
+		return SCHEDULE_DAILY;
+	if (!strcasecmp(value, "weekly"))
+		return SCHEDULE_WEEKLY;
+	return SCHEDULE_NONE;
+}
+
+struct maintenance_run_opts {
+	int auto_flag;
+	int quiet;
+	enum schedule_priority schedule;
+};
+
+static int pack_refs_condition(void)
+{
+	/*
+	 * The auto-repacking logic for refs is handled by the ref backends and
+	 * exposed via `git pack-refs --auto`. We thus always return truish
+	 * here and let the backend decide for us.
+	 */
+	return 1;
+}
+
 static int maintenance_task_pack_refs(MAYBE_UNUSED struct maintenance_run_opts *opts)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 
 	cmd.git_cmd = 1;
 	strvec_pushl(&cmd.args, "pack-refs", "--all", "--prune", NULL);
+	if (opts->auto_flag)
+		strvec_push(&cmd.args, "--auto");
+
 	return run_command(&cmd);
 }
 
@@ -547,7 +585,7 @@ done:
 	return ret;
 }
 
-static void gc_before_repack(void)
+static void gc_before_repack(struct maintenance_run_opts *opts)
 {
 	/*
 	 * We may be called twice, as both the pre- and
@@ -558,7 +596,7 @@ static void gc_before_repack(void)
 	if (done++)
 		return;
 
-	if (pack_refs && maintenance_task_pack_refs(NULL))
+	if (pack_refs && maintenance_task_pack_refs(opts))
 		die(FAILED_RUN, "pack-refs");
 
 	if (prune_reflogs) {
@@ -574,7 +612,6 @@ static void gc_before_repack(void)
 int cmd_gc(int argc, const char **argv, const char *prefix)
 {
 	int aggressive = 0;
-	int auto_gc = 0;
 	int quiet = 0;
 	int force = 0;
 	const char *name;
@@ -583,6 +620,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 	int keep_largest_pack = -1;
 	timestamp_t dummy;
 	struct child_process rerere_cmd = CHILD_PROCESS_INIT;
+	struct maintenance_run_opts opts = {0};
 
 	struct option builtin_gc_options[] = {
 		OPT__QUIET(&quiet, N_("suppress progress reporting")),
@@ -593,7 +631,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		OPT_MAGNITUDE(0, "max-cruft-size", &max_cruft_size,
 			      N_("with --cruft, limit the size of new cruft packs")),
 		OPT_BOOL(0, "aggressive", &aggressive, N_("be more thorough (increased runtime)")),
-		OPT_BOOL_F(0, "auto", &auto_gc, N_("enable auto-gc mode"),
+		OPT_BOOL_F(0, "auto", &opts.auto_flag, N_("enable auto-gc mode"),
 			   PARSE_OPT_NOCOMPLETE),
 		OPT_BOOL_F(0, "force", &force,
 			   N_("force running gc even if there may be another gc running"),
@@ -638,7 +676,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 	if (quiet)
 		strvec_push(&repack, "-q");
 
-	if (auto_gc) {
+	if (opts.auto_flag) {
 		/*
 		 * Auto-gc should be least intrusive as possible.
 		 */
@@ -663,7 +701,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 
 			if (lock_repo_for_gc(force, &pid))
 				return 0;
-			gc_before_repack(); /* dies on failure */
+			gc_before_repack(&opts); /* dies on failure */
 			delete_tempfile(&pidfile);
 
 			/*
@@ -688,7 +726,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 
 	name = lock_repo_for_gc(force, &pid);
 	if (name) {
-		if (auto_gc)
+		if (opts.auto_flag)
 			return 0; /* be quiet on --auto */
 		die(_("gc is already running on machine '%s' pid %"PRIuMAX" (use --force if not)"),
 		    name, (uintmax_t)pid);
@@ -703,7 +741,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		atexit(process_log_file_at_exit);
 	}
 
-	gc_before_repack();
+	gc_before_repack(&opts);
 
 	if (!repository_format_precious_objects) {
 		struct child_process repack_cmd = CHILD_PROCESS_INIT;
@@ -758,7 +796,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 					     !quiet && !daemonized ? COMMIT_GRAPH_WRITE_PROGRESS : 0,
 					     NULL);
 
-	if (auto_gc && too_many_loose_objects())
+	if (opts.auto_flag && too_many_loose_objects())
 		warning(_("There are too many unreachable loose objects; "
 			"run 'git prune' to remove them."));
 
@@ -772,26 +810,6 @@ static const char *const builtin_maintenance_run_usage[] = {
 	N_("git maintenance run [--auto] [--[no-]quiet] [--task=<task>] [--schedule]"),
 	NULL
 };
-
-enum schedule_priority {
-	SCHEDULE_NONE = 0,
-	SCHEDULE_WEEKLY = 1,
-	SCHEDULE_DAILY = 2,
-	SCHEDULE_HOURLY = 3,
-};
-
-static enum schedule_priority parse_schedule(const char *value)
-{
-	if (!value)
-		return SCHEDULE_NONE;
-	if (!strcasecmp(value, "hourly"))
-		return SCHEDULE_HOURLY;
-	if (!strcasecmp(value, "daily"))
-		return SCHEDULE_DAILY;
-	if (!strcasecmp(value, "weekly"))
-		return SCHEDULE_WEEKLY;
-	return SCHEDULE_NONE;
-}
 
 static int maintenance_opt_schedule(const struct option *opt, const char *arg,
 				    int unset)
@@ -808,12 +826,6 @@ static int maintenance_opt_schedule(const struct option *opt, const char *arg,
 
 	return 0;
 }
-
-struct maintenance_run_opts {
-	int auto_flag;
-	int quiet;
-	enum schedule_priority schedule;
-};
 
 /* Remember to update object flag allocation in object.h */
 #define SEEN		(1u<<0)
@@ -834,7 +846,7 @@ static int dfs_on_ref(const char *refname UNUSED,
 	struct commit_list *stack = NULL;
 	struct commit *commit;
 
-	if (!peel_iterated_oid(oid, &peeled))
+	if (!peel_iterated_oid(the_repository, oid, &peeled))
 		oid = &peeled;
 	if (oid_object_info(the_repository, oid, NULL) != OBJ_COMMIT)
 		return 0;
@@ -895,7 +907,8 @@ static int should_write_commit_graph(void)
 	if (data.limit < 0)
 		return 1;
 
-	result = for_each_ref(dfs_on_ref, &data);
+	result = refs_for_each_ref(get_main_ref_store(the_repository),
+				   dfs_on_ref, &data);
 
 	repo_clear_commit_marks(the_repository, SEEN);
 
@@ -1296,7 +1309,7 @@ static struct maintenance_task tasks[] = {
 	[TASK_PACK_REFS] = {
 		"pack-refs",
 		maintenance_task_pack_refs,
-		NULL,
+		pack_refs_condition,
 	},
 };
 
@@ -1858,6 +1871,7 @@ static int launchctl_schedule_plist(const char *exec_path, enum schedule_priorit
 		   "<string>%s/git</string>\n"
 		   "<string>--exec-path=%s</string>\n"
 		   "<string>for-each-repo</string>\n"
+		   "<string>--keep-going</string>\n"
 		   "<string>--config=maintenance.repo</string>\n"
 		   "<string>maintenance</string>\n"
 		   "<string>run</string>\n"
@@ -2100,7 +2114,7 @@ static int schtasks_schedule_task(const char *exec_path, enum schedule_priority 
 	      "<Actions Context=\"Author\">\n"
 	      "<Exec>\n"
 	      "<Command>\"%s\\headless-git.exe\"</Command>\n"
-	      "<Arguments>--exec-path=\"%s\" for-each-repo --config=maintenance.repo maintenance run --schedule=%s</Arguments>\n"
+	      "<Arguments>--exec-path=\"%s\" for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%s</Arguments>\n"
 	      "</Exec>\n"
 	      "</Actions>\n"
 	      "</Task>\n";
@@ -2245,7 +2259,7 @@ static int crontab_update_schedule(int run_maintenance, int fd)
 			"# replaced in the future by a Git command.\n\n");
 
 		strbuf_addf(&line_format,
-			    "%%d %%s * * %%s \"%s/git\" --exec-path=\"%s\" for-each-repo --config=maintenance.repo maintenance run --schedule=%%s\n",
+			    "%%d %%s * * %%s \"%s/git\" --exec-path=\"%s\" for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%s\n",
 			    exec_path, exec_path);
 		fprintf(cron_in, line_format.buf, minute, "1-23", "*", "hourly");
 		fprintf(cron_in, line_format.buf, minute, "0", "1-6", "daily");
@@ -2446,7 +2460,7 @@ static int systemd_timer_write_service_template(const char *exec_path)
 	       "\n"
 	       "[Service]\n"
 	       "Type=oneshot\n"
-	       "ExecStart=\"%s/git\" --exec-path=\"%s\" for-each-repo --config=maintenance.repo maintenance run --schedule=%%i\n"
+	       "ExecStart=\"%s/git\" --exec-path=\"%s\" for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%i\n"
 	       "LockPersonality=yes\n"
 	       "MemoryDenyWriteExecute=yes\n"
 	       "NoNewPrivileges=yes\n"

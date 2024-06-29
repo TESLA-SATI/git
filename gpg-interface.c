@@ -27,7 +27,9 @@ static void gpg_interface_lazy_init(void)
 }
 
 static char *configured_signing_key;
-static const char *ssh_default_key_command, *ssh_allowed_signers, *ssh_revocation_file;
+static char *ssh_default_key_command;
+static char *ssh_allowed_signers;
+static char *ssh_revocation_file;
 static enum signature_trust_level configured_min_trust_level = TRUST_UNDEFINED;
 
 struct gpg_format {
@@ -483,7 +485,7 @@ static int verify_ssh_signed_buffer(struct signature_check *sigc,
 
 	if (sigc->payload_timestamp)
 		strbuf_addf(&verify_time, "-Overify-time=%s",
-			show_date(sigc->payload_timestamp, 0, &verify_date_mode));
+			show_date(sigc->payload_timestamp, 0, verify_date_mode));
 
 	/* Find the principal from the signers */
 	strvec_pushl(&ssh_keygen.args, fmt->program,
@@ -725,7 +727,7 @@ static int git_gpg_config(const char *var, const char *value,
 			  void *cb UNUSED)
 {
 	struct gpg_format *fmt = NULL;
-	char *fmtname = NULL;
+	const char *fmtname = NULL;
 	char *trust;
 	int ret;
 
@@ -781,7 +783,7 @@ static int git_gpg_config(const char *var, const char *value,
 
 	if (fmtname) {
 		fmt = get_format_by_name(fmtname);
-		return git_config_string(&fmt->program, var, value);
+		return git_config_string((char **) &fmt->program, var, value);
 	}
 
 	return 0;

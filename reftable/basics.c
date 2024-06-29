@@ -27,7 +27,7 @@ void put_be16(uint8_t *out, uint16_t i)
 	out[1] = (uint8_t)(i & 0xff);
 }
 
-int binsearch(size_t sz, int (*f)(size_t k, void *args), void *args)
+size_t binsearch(size_t sz, int (*f)(size_t k, void *args), void *args)
 {
 	size_t lo = 0;
 	size_t hi = sz;
@@ -39,8 +39,11 @@ int binsearch(size_t sz, int (*f)(size_t k, void *args), void *args)
 	 */
 	while (hi - lo > 1) {
 		size_t mid = lo + (hi - lo) / 2;
+		int ret = f(mid, args);
+		if (ret < 0)
+			return sz;
 
-		if (f(mid, args))
+		if (ret > 0)
 			hi = mid;
 		else
 			lo = mid;
@@ -64,9 +67,9 @@ void free_names(char **a)
 	reftable_free(a);
 }
 
-size_t names_length(char **names)
+size_t names_length(const char **names)
 {
-	char **p = names;
+	const char **p = names;
 	while (*p)
 		p++;
 	return p - names;
@@ -99,15 +102,12 @@ void parse_names(char *buf, int size, char ***namesp)
 	*namesp = names;
 }
 
-int names_equal(char **a, char **b)
+int names_equal(const char **a, const char **b)
 {
-	int i = 0;
-	for (; a[i] && b[i]; i++) {
-		if (strcmp(a[i], b[i])) {
+	size_t i = 0;
+	for (; a[i] && b[i]; i++)
+		if (strcmp(a[i], b[i]))
 			return 0;
-		}
-	}
-
 	return a[i] == b[i];
 }
 

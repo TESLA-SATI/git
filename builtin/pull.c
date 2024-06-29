@@ -5,7 +5,7 @@
  *
  * Fetch one or more remote refs and merge it/them into the current HEAD.
  */
-#define USE_THE_INDEX_VARIABLE
+
 #include "builtin.h"
 #include "advice.h"
 #include "config.h"
@@ -71,48 +71,48 @@ static const char * const pull_usage[] = {
 
 /* Shared options */
 static int opt_verbosity;
-static char *opt_progress;
+static const char *opt_progress;
 static int recurse_submodules = RECURSE_SUBMODULES_DEFAULT;
 static int recurse_submodules_cli = RECURSE_SUBMODULES_DEFAULT;
 
 /* Options passed to git-merge or git-rebase */
 static enum rebase_type opt_rebase = -1;
-static char *opt_diffstat;
-static char *opt_log;
-static char *opt_signoff;
-static char *opt_squash;
-static char *opt_commit;
-static char *opt_edit;
-static char *cleanup_arg;
-static char *opt_ff;
-static char *opt_verify_signatures;
-static char *opt_verify;
+static const char *opt_diffstat;
+static const char *opt_log;
+static const char *opt_signoff;
+static const char *opt_squash;
+static const char *opt_commit;
+static const char *opt_edit;
+static const char *cleanup_arg;
+static const char *opt_ff;
+static const char *opt_verify_signatures;
+static const char *opt_verify;
 static int opt_autostash = -1;
 static int config_autostash;
 static int check_trust_level = 1;
 static struct strvec opt_strategies = STRVEC_INIT;
 static struct strvec opt_strategy_opts = STRVEC_INIT;
-static char *opt_gpg_sign;
+static const char *opt_gpg_sign;
 static int opt_allow_unrelated_histories;
 
 /* Options passed to git-fetch */
-static char *opt_all;
-static char *opt_append;
-static char *opt_upload_pack;
+static const char *opt_all;
+static const char *opt_append;
+static const char *opt_upload_pack;
 static int opt_force;
-static char *opt_tags;
-static char *opt_prune;
-static char *max_children;
+static const char *opt_tags;
+static const char *opt_prune;
+static const char *max_children;
 static int opt_dry_run;
-static char *opt_keep;
-static char *opt_depth;
-static char *opt_unshallow;
-static char *opt_update_shallow;
-static char *opt_refmap;
-static char *opt_ipv4;
-static char *opt_ipv6;
+static const char *opt_keep;
+static const char *opt_depth;
+static const char *opt_unshallow;
+static const char *opt_update_shallow;
+static const char *opt_refmap;
+static const char *opt_ipv4;
+static const char *opt_ipv6;
 static int opt_show_forced_updates = -1;
-static char *set_upstream;
+static const char *set_upstream;
 static struct strvec opt_fetch = STRVEC_INIT;
 
 static struct option pull_options[] = {
@@ -611,7 +611,7 @@ static int pull_into_void(const struct object_id *merge_head,
 				  merge_head, 0))
 		return 1;
 
-	if (update_ref("initial pull", "HEAD", merge_head, curr_head, 0, UPDATE_REFS_DIE_ON_ERR))
+	if (refs_update_ref(get_main_ref_store(the_repository), "initial pull", "HEAD", merge_head, curr_head, 0, UPDATE_REFS_DIE_ON_ERR))
 		return 1;
 
 	return 0;
@@ -1044,7 +1044,7 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 		if (opt_autostash == -1)
 			opt_autostash = config_autostash;
 
-		if (is_null_oid(&orig_head) && !is_index_unborn(&the_index))
+		if (is_null_oid(&orig_head) && !is_index_unborn(the_repository->index))
 			die(_("Updating an unborn branch with changes added to the index."));
 
 		if (!opt_autostash)
