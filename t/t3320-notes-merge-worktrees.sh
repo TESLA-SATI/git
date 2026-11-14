@@ -8,7 +8,6 @@ test_description='Test merging of notes trees in multiple worktrees'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup commit' '
@@ -68,7 +67,7 @@ test_expect_success 'merge z into x while mid-merge on y succeeds' '
 		git config core.notesRef refs/notes/x &&
 		test_must_fail git notes merge z >out 2>&1 &&
 		test_grep "Automatic notes merge failed" out &&
-		grep -v "A notes merge into refs/notes/x is already in-progress in" out
+		test_grep -v "A notes merge into refs/notes/x is already in-progress in" out
 	) &&
 	echo "refs/notes/x" >expect &&
 	git -C worktree2 symbolic-ref NOTES_MERGE_REF >actual &&

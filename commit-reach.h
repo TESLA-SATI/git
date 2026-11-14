@@ -14,13 +14,23 @@ int repo_get_merge_bases(struct repository *r,
 			 struct commit *rev2,
 			 struct commit_list **result);
 int repo_get_merge_bases_many(struct repository *r,
-			      struct commit *one, int n,
+			      struct commit *one, size_t n,
 			      struct commit **twos,
 			      struct commit_list **result);
-/* To be used only when object flags after this call no longer matter */
+enum merge_base_flags {
+	MERGE_BASE_IGNORE_MISSING_COMMITS = (1 << 0),
+	MERGE_BASE_FIND_ALL               = (1 << 1),
+};
+
+/*
+ * To be used only when object flags after this call no longer matter.
+ * Without MERGE_BASE_FIND_ALL and with generation numbers available,
+ * returns after finding the first merge-base, skipping the STALE drain.
+ */
 int repo_get_merge_bases_many_dirty(struct repository *r,
-				    struct commit *one, int n,
+				    struct commit *one, size_t n,
 				    struct commit **twos,
+				    enum merge_base_flags mb_flags,
 				    struct commit_list **result);
 
 int get_octopus_merge_bases(struct commit_list *in, struct commit_list **result);
@@ -63,7 +73,8 @@ int ref_newer(const struct object_id *new_oid, const struct object_id *old_oid);
 enum contains_result {
 	CONTAINS_UNKNOWN = 0,
 	CONTAINS_NO,
-	CONTAINS_YES
+	CONTAINS_YES,
+	CONTAINS_IN_PROGRESS
 };
 
 define_commit_slab(contains_cache, enum contains_result);
@@ -78,13 +89,14 @@ int commit_contains(struct ref_filter *filter, struct commit *commit,
  * commits with date below 'min_commit_date' or generation below
  * 'min_generation'.
  */
-int can_all_from_reach_with_flag(struct object_array *from,
+int can_all_from_reach_with_flag(struct repository *r,
+				 struct object_array *from,
 				 unsigned int with_flag,
 				 unsigned int assign_flag,
-				 time_t min_commit_date,
+				 timestamp_t min_commit_date,
 				 timestamp_t min_generation);
-int can_all_from_reach(struct commit_list *from, struct commit_list *to,
-		       int commit_date_cutoff);
+int can_all_from_reach(struct repository *r, struct commit_list *from,
+		       struct commit_list *to, int commit_date_cutoff);
 
 
 /*
@@ -95,8 +107,8 @@ int can_all_from_reach(struct commit_list *from, struct commit_list *to,
  * This method uses the PARENT1 and PARENT2 flags during its operation,
  * so be sure these flags are not set before calling the method.
  */
-struct commit_list *get_reachable_subset(struct commit **from, int nr_from,
-					 struct commit **to, int nr_to,
+struct commit_list *get_reachable_subset(struct commit **from, size_t nr_from,
+					 struct commit **to, size_t nr_to,
 					 unsigned int reachable_flag);
 
 struct ahead_behind_count {
@@ -138,5 +150,22 @@ void tips_reachable_from_bases(struct repository *r,
 			       struct commit_list *bases,
 			       struct commit **tips, size_t tips_nr,
 			       int mark);
+
+/*
+ * Given a 'tip' commit and a list potential 'bases', return the index 'i' that
+ * minimizes the number of commits in the first-parent history of 'tip' and not
+ * in the first-parent history of 'bases[i]'.
+ *
+ * Among a list of long-lived branches that are updated only by merges (with the
+ * first parent being the previous position of the branch), this would inform
+ * which branch was used to create the tip reference.
+ *
+ * Returns -1 if no common point is found in first-parent histories, which is
+ * rare, but possible with multiple root commits.
+ */
+int get_branch_base_for_tip(struct repository *r,
+			    struct commit *tip,
+			    struct commit **bases,
+			    size_t bases_nr);
 
 #endif

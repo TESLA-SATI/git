@@ -4,6 +4,9 @@
  * Copyright (c) 2007 Junio C Hamano
  */
 
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "convert.h"
@@ -13,11 +16,13 @@
 #include "merge-ll.h"
 #include "quote.h"
 #include "strbuf.h"
+#include "gettext.h"
+#include "tempfile.h"
 
 struct ll_merge_driver;
 
 typedef enum ll_merge_result (*ll_merge_fn)(const struct ll_merge_driver *,
-			   mmbuffer_t *result,
+			   mmfile_t *result,
 			   const char *path,
 			   mmfile_t *orig, const char *orig_name,
 			   mmfile_t *src1, const char *name1,
@@ -29,7 +34,7 @@ struct ll_merge_driver {
 	const char *name;
 	const char *description;
 	ll_merge_fn fn;
-	const char *recursive;
+	char *recursive;
 	struct ll_merge_driver *next;
 	char *cmdline;
 };
@@ -52,7 +57,7 @@ void reset_merge_attributes(void)
  * Built-in low-levels
  */
 static enum ll_merge_result ll_binary_merge(const struct ll_merge_driver *drv UNUSED,
-			   mmbuffer_t *result,
+			   mmfile_t *result,
 			   const char *path UNUSED,
 			   mmfile_t *orig, const char *orig_name UNUSED,
 			   mmfile_t *src1, const char *name1 UNUSED,
@@ -97,7 +102,7 @@ static enum ll_merge_result ll_binary_merge(const struct ll_merge_driver *drv UN
 }
 
 static enum ll_merge_result ll_xdl_merge(const struct ll_merge_driver *drv_unused,
-			mmbuffer_t *result,
+			mmfile_t *result,
 			const char *path,
 			mmfile_t *orig, const char *orig_name,
 			mmfile_t *src1, const char *name1,
@@ -143,7 +148,7 @@ static enum ll_merge_result ll_xdl_merge(const struct ll_merge_driver *drv_unuse
 }
 
 static enum ll_merge_result ll_union_merge(const struct ll_merge_driver *drv_unused,
-			  mmbuffer_t *result,
+			  mmfile_t *result,
 			  const char *path,
 			  mmfile_t *orig, const char *orig_name,
 			  mmfile_t *src1, const char *name1,
@@ -170,22 +175,35 @@ static struct ll_merge_driver ll_merge_drv[] = {
 	{ "union", "built-in union merge", ll_union_merge },
 };
 
-static void create_temp(mmfile_t *src, char *path, size_t len)
+static struct tempfile *create_temp(mmfile_t *src)
 {
-	int fd;
+	struct tempfile *t = xmks_tempfile(".merge_file_XXXXXX");
+	if (write_in_full(t->fd, src->ptr, src->size) < 0)
+		die_errno(_("unable to write %s"), get_tempfile_path(t));
+	if (close_tempfile_gently(t) < 0)
+		die_errno(_("unable to close %s"), get_tempfile_path(t));
+	return t;
+}
 
-	xsnprintf(path, len, ".merge_file_XXXXXX");
-	fd = xmkstemp(path);
-	if (write_in_full(fd, src->ptr, src->size) < 0)
-		die_errno("unable to write temp-file");
-	close(fd);
+static const char *temp_path_basename(struct tempfile *t)
+{
+	/*
+	 * basename() takes a non-const pointer because it can
+	 * modify the input string to remove trailing directory
+	 * separators. We know that we don't have any because
+	 * this is a clean path generated from our vanilla
+	 * tempfile template.
+	 *
+	 * So casting away the const here is safe, albeit gross.
+	 */
+	return basename((char *)get_tempfile_path(t));
 }
 
 /*
  * User defined low-level merge driver support.
  */
 static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
-			mmbuffer_t *result,
+			mmfile_t *result,
 			const char *path,
 			mmfile_t *orig, const char *orig_name,
 			mmfile_t *src1, const char *name1,
@@ -193,12 +211,11 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
 			const struct ll_merge_options *opts,
 			int marker_size)
 {
-	char temp[3][50];
+	struct tempfile *tmp_o, *tmp_a, *tmp_b;
 	struct strbuf cmd = STRBUF_INIT;
 	const char *format = fn->cmdline;
 	struct child_process child = CHILD_PROCESS_INIT;
-	int status, fd, i;
-	struct stat st;
+	int status;
 	enum ll_merge_result ret;
 	assert(opts);
 
@@ -207,19 +224,19 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
 
 	result->ptr = NULL;
 	result->size = 0;
-	create_temp(orig, temp[0], sizeof(temp[0]));
-	create_temp(src1, temp[1], sizeof(temp[1]));
-	create_temp(src2, temp[2], sizeof(temp[2]));
+	tmp_o = create_temp(orig);
+	tmp_a = create_temp(src1);
+	tmp_b = create_temp(src2);
 
 	while (strbuf_expand_step(&cmd, &format)) {
 		if (skip_prefix(format, "%", &format))
 			strbuf_addch(&cmd, '%');
 		else if (skip_prefix(format, "O", &format))
-			strbuf_addstr(&cmd, temp[0]);
+			strbuf_addstr(&cmd, temp_path_basename(tmp_o));
 		else if (skip_prefix(format, "A", &format))
-			strbuf_addstr(&cmd, temp[1]);
+			strbuf_addstr(&cmd, temp_path_basename(tmp_a));
 		else if (skip_prefix(format, "B", &format))
-			strbuf_addstr(&cmd, temp[2]);
+			strbuf_addstr(&cmd, temp_path_basename(tmp_b));
 		else if (skip_prefix(format, "L", &format))
 			strbuf_addf(&cmd, "%d", marker_size);
 		else if (skip_prefix(format, "P", &format))
@@ -237,23 +254,6 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
 	child.use_shell = 1;
 	strvec_push(&child.args, cmd.buf);
 	status = run_command(&child);
-	fd = open(temp[1], O_RDONLY);
-	if (fd < 0)
-		goto bad;
-	if (fstat(fd, &st))
-		goto close_bad;
-	result->size = st.st_size;
-	result->ptr = xmallocz(result->size);
-	if (read_in_full(fd, result->ptr, result->size) != result->size) {
-		FREE_AND_NULL(result->ptr);
-		result->size = 0;
-	}
- close_bad:
-	close(fd);
- bad:
-	for (i = 0; i < 3; i++)
-		unlink_or_warn(temp[i]);
-	strbuf_release(&cmd);
 	if (!status)
 		ret = LL_MERGE_OK;
 	else if (status <= 128)
@@ -261,6 +261,14 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
 	else
 		/* died due to a signal: WTERMSIG(status) + 128 */
 		ret = LL_MERGE_ERROR;
+
+	if (read_mmfile(result, temp_path_basename(tmp_a)) < 0)
+		ret = LL_MERGE_ERROR;
+
+	delete_tempfile(&tmp_o);
+	delete_tempfile(&tmp_a);
+	delete_tempfile(&tmp_b);
+	strbuf_release(&cmd);
 	return ret;
 }
 
@@ -268,7 +276,7 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
  * merge.default and merge.driver configuration items
  */
 static struct ll_merge_driver *ll_user_merge, **ll_user_merge_tail;
-static const char *default_ll_merge;
+static char *default_ll_merge;
 
 static int read_merge_config(const char *var, const char *value,
 			     const struct config_context *ctx UNUSED,
@@ -304,8 +312,13 @@ static int read_merge_config(const char *var, const char *value,
 		ll_user_merge_tail = &(fn->next);
 	}
 
-	if (!strcmp("name", key))
-		return git_config_string(&fn->description, var, value);
+	if (!strcmp("name", key)) {
+		/*
+		 * The description is leaking, but that's okay as we want to
+		 * keep around the merge drivers anyway.
+		 */
+		return git_config_string((char **) &fn->description, var, value);
+	}
 
 	if (!strcmp("driver", key)) {
 		if (!value)
@@ -327,7 +340,7 @@ static int read_merge_config(const char *var, const char *value,
 		 *    %X - the revision for our version
 		 *    %Y - the revision for their version
 		 *
-		 * If the file is not named indentically in all versions, then each
+		 * If the file is not named identically in all versions, then each
 		 * revision is joined with the corresponding path, separated by a colon.
 		 * The external merge driver should write the results in the
 		 * file named by %A, and signal that it has done with zero exit
@@ -348,7 +361,7 @@ static void initialize_ll_merge(void)
 	if (ll_user_merge_tail)
 		return;
 	ll_user_merge_tail = &ll_user_merge;
-	git_config(read_merge_config, NULL);
+	repo_config(the_repository, read_merge_config, NULL);
 }
 
 static const struct ll_merge_driver *find_ll_merge_driver(const char *merge_attr)
@@ -394,7 +407,7 @@ static void normalize_file(mmfile_t *mm, const char *path, struct index_state *i
 	}
 }
 
-enum ll_merge_result ll_merge(mmbuffer_t *result_buf,
+enum ll_merge_result ll_merge(mmfile_t *result_buf,
 	     const char *path,
 	     mmfile_t *ancestor, const char *ancestor_label,
 	     mmfile_t *ours, const char *our_label,
@@ -420,7 +433,10 @@ enum ll_merge_result ll_merge(mmbuffer_t *result_buf,
 	git_check_attr(istate, path, check);
 	ll_driver_name = check->items[0].value;
 	if (check->items[1].value) {
-		marker_size = atoi(check->items[1].value);
+		if (strtol_i(check->items[1].value, 10, &marker_size)) {
+			marker_size = DEFAULT_CONFLICT_MARKER_SIZE;
+			warning(_("invalid marker-size '%s', expecting an integer"), check->items[1].value);
+		}
 		if (marker_size <= 0)
 			marker_size = DEFAULT_CONFLICT_MARKER_SIZE;
 	}
@@ -447,9 +463,68 @@ int ll_merge_marker_size(struct index_state *istate, const char *path)
 		check = attr_check_initl("conflict-marker-size", NULL);
 	git_check_attr(istate, path, check);
 	if (check->items[0].value) {
-		marker_size = atoi(check->items[0].value);
+		if (strtol_i(check->items[0].value, 10, &marker_size)) {
+			marker_size = DEFAULT_CONFLICT_MARKER_SIZE;
+			warning(_("invalid marker-size '%s', expecting an integer"), check->items[0].value);
+		}
 		if (marker_size <= 0)
 			marker_size = DEFAULT_CONFLICT_MARKER_SIZE;
 	}
 	return marker_size;
+}
+
+int is_conflict_marker_line(const char *line, unsigned long len, int marker_size)
+{
+	char firstchar;
+	int cnt;
+
+	if (len < marker_size + 1)
+		return 0;
+
+	firstchar = line[0];
+	switch (firstchar) {
+	case '=': case '>': case '<': case '|':
+		break;
+	default:
+		return 0;
+	}
+
+	for (cnt = 1; cnt < marker_size; cnt++) {
+		if (line[cnt] != firstchar)
+			return 0;
+	}
+
+	if (((firstchar == '<') || (firstchar == '>')) &&
+	    line[marker_size] != ' ')
+		return 0;
+
+	if (!isspace((unsigned char)line[marker_size]))
+		return 0;
+
+	return firstchar;
+}
+
+int has_conflict_markers(struct index_state *istate, const char *path)
+{
+	FILE *f;
+	struct strbuf sb = STRBUF_INIT;
+	int marker_size = ll_merge_marker_size(istate, path);
+	int has_markers = 0;
+
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+
+	while (strbuf_getwholeline(&sb, f, '\n') != EOF) {
+		if (is_conflict_marker_line(sb.buf, sb.len, marker_size)) {
+			has_markers = 1;
+			break;
+		}
+		if (buffer_is_binary(sb.buf,
+				     ULONG_MAX <= sb.len ? ULONG_MAX : sb.len))
+			break;
+	}
+	fclose(f);
+	strbuf_release(&sb);
+	return has_markers;
 }

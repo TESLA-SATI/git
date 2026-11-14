@@ -5,10 +5,9 @@
 
 test_description='our own option parser'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
-cat >expect <<\EOF
+cat >expect-part1 <<\EOF
 usage: test-tool parse-options <options>
 
     A helper function for the parse-options API.
@@ -23,8 +22,10 @@ usage: test-tool parse-options <options>
 
     -i, --[no-]integer <n>
                           get a integer
+    --[no-]i16 <n>        get a 16 bit integer
     -j <n>                get a integer, too
-    -m, --magnitude <n>   get a magnitude
+    -u, --unsigned <n>    get an unsigned integer
+    --u16 <n>             get a 16 bit unsigned integer
     --[no-]set23          set integer to 23
     --mode1               set integer to 1 (cmdmode option)
     --mode2               set integer to 2 (cmdmode option)
@@ -40,6 +41,9 @@ String options
     --[no-]string2 <str>  get another string
     --[no-]st <st>        get another string (pervert ordering)
     -o <str>              get another string
+EOF
+
+cat >expect-part2 <<\EOF
     --longhelp            help text of this entry
                           spans multiple lines
     --[no-]list <str>     add str to list
@@ -66,10 +70,30 @@ Alias
 
 EOF
 
+cat >expect-noop <<\EOF
+    --[no-]obsolete       no-op (backward compatibility)
+EOF
+
+cat >expect-hidden <<\EOF
+Hidden options
+    --[no-]hidden-bool    get a boolean
+    -k, --[no-]hidden-integer <n>
+                          get a integer
+
+EOF
+
 test_expect_success 'test help' '
-	test_must_fail test-tool parse-options -h >output 2>output.err &&
+	cat expect-part1 expect-part2 >expect &&
+	test-tool parse-options -h >output 2>output.err &&
 	test_must_be_empty output.err &&
 	test_cmp expect output
+'
+
+test_expect_success 'test --help-all shows hidden group and options' '
+	cat expect-part1 expect-noop expect-part2 expect-hidden >expect-help-all &&
+	test-tool parse-options --help-all >output 2>output.err &&
+	test_must_be_empty output.err &&
+	test_cmp expect-help-all output
 '
 
 mv expect expect.err
@@ -112,32 +136,36 @@ test_expect_success 'OPT_BOOL() no negation #2' 'check_unknown_i18n --no-no-fear
 
 test_expect_success 'OPT_BOOL() positivation' 'check boolean: 0 -D --doubt'
 
-test_expect_success 'OPT_INT() negative' 'check integer: -2345 -i -2345'
+test_expect_success 'OPT_INTEGER() negative' 'check integer: -2345 -i -2345'
+test_expect_success 'OPT_INTEGER() kilo' 'check integer: 239616 -i 234k'
+test_expect_success 'OPT_INTEGER() negative kilo' 'check integer: -239616 -i -234k'
 
-test_expect_success 'OPT_MAGNITUDE() simple' '
-	check magnitude: 2345678 -m 2345678
+test_expect_success 'OPT_UNSIGNED() simple' '
+	check unsigned: 2345678 -u 2345678
 '
 
-test_expect_success 'OPT_MAGNITUDE() kilo' '
-	check magnitude: 239616 -m 234k
+test_expect_success 'OPT_UNSIGNED() kilo' '
+	check unsigned: 239616 -u 234k
 '
 
-test_expect_success 'OPT_MAGNITUDE() mega' '
-	check magnitude: 104857600 -m 100m
+test_expect_success 'OPT_UNSIGNED() mega' '
+	check unsigned: 104857600 -u 100m
 '
 
-test_expect_success 'OPT_MAGNITUDE() giga' '
-	check magnitude: 1073741824 -m 1g
+test_expect_success 'OPT_UNSIGNED() giga' '
+	check unsigned: 1073741824 -u 1g
 '
 
-test_expect_success 'OPT_MAGNITUDE() 3giga' '
-	check magnitude: 3221225472 -m 3g
+test_expect_success 'OPT_UNSIGNED() 3giga' '
+	check unsigned: 3221225472 -u 3g
 '
 
 cat >expect <<\EOF
 boolean: 2
 integer: 1729
-magnitude: 16384
+i16: 0
+unsigned: 16384
+u16: 0
 timestamp: 0
 string: 123
 abbrev: 7
@@ -148,7 +176,7 @@ file: prefix/my.file
 EOF
 
 test_expect_success 'short options' '
-	test-tool parse-options -s123 -b -i 1729 -m 16k -b -vv -n -F my.file \
+	test-tool parse-options -s123 -b -i 1729 -u 16k -b -vv -n -F my.file \
 	>output 2>output.err &&
 	test_cmp expect output &&
 	test_must_be_empty output.err
@@ -157,7 +185,9 @@ test_expect_success 'short options' '
 cat >expect <<\EOF
 boolean: 2
 integer: 1729
-magnitude: 16384
+i16: 9000
+unsigned: 16384
+u16: 32768
 timestamp: 0
 string: 321
 abbrev: 10
@@ -168,11 +198,30 @@ file: prefix/fi.le
 EOF
 
 test_expect_success 'long options' '
-	test-tool parse-options --boolean --integer 1729 --magnitude 16k \
-		--boolean --string2=321 --verbose --verbose --no-dry-run \
+	test-tool parse-options --boolean --integer 1729 --i16 9000 --unsigned 16k \
+		--u16 32k --boolean --string2=321 --verbose --verbose --no-dry-run \
 		--abbrev=10 --file fi.le --obsolete \
 		>output 2>output.err &&
 	test_must_be_empty output.err &&
+	test_cmp expect output
+'
+
+test_expect_success 'abbreviate to something longer than SHA1 length' '
+	cat >expect <<-EOF &&
+	boolean: 0
+	integer: 0
+	i16: 0
+	unsigned: 0
+	u16: 0
+	timestamp: 0
+	string: (not set)
+	abbrev: 100
+	verbose: -1
+	quiet: 0
+	dry run: no
+	file: (not set)
+	EOF
+	test-tool parse-options --abbrev=100 >output &&
 	test_cmp expect output
 '
 
@@ -237,7 +286,9 @@ test_expect_success 'superfluous value provided: cmdmode' '
 cat >expect <<\EOF
 boolean: 1
 integer: 13
-magnitude: 0
+i16: 0
+unsigned: 0
+u16: 0
 timestamp: 0
 string: 123
 abbrev: 7
@@ -260,7 +311,9 @@ test_expect_success 'intermingled arguments' '
 cat >expect <<\EOF
 boolean: 0
 integer: 2
-magnitude: 0
+i16: 0
+unsigned: 0
+u16: 0
 timestamp: 0
 string: (not set)
 abbrev: 7
@@ -294,13 +347,13 @@ test_expect_success 'non ambiguous option (after two options it abbreviates)' '
 
 test_expect_success 'Alias options do not contribute to abbreviation' '
 	test-tool parse-options --alias-source 123 >output &&
-	grep "^string: 123" output &&
+	test_grep "^string: 123" output &&
 	test-tool parse-options --alias-target 123 >output &&
-	grep "^string: 123" output &&
+	test_grep "^string: 123" output &&
 	test_must_fail test-tool parse-options --alias &&
 	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
 	test-tool parse-options --alias 123 >output &&
-	grep "^string: 123" output
+	test_grep "^string: 123" output
 '
 
 cat >typo.err <<\EOF
@@ -327,7 +380,9 @@ cat >expect <<\EOF
 Callback: "four", 0
 boolean: 5
 integer: 4
-magnitude: 0
+i16: 0
+unsigned: 0
+u16: 0
 timestamp: 0
 string: (not set)
 abbrev: 7
@@ -352,7 +407,9 @@ test_expect_success 'OPT_CALLBACK() and callback errors work' '
 cat >expect <<\EOF
 boolean: 1
 integer: 23
-magnitude: 0
+i16: 0
+unsigned: 0
+u16: 0
 timestamp: 0
 string: (not set)
 abbrev: 7
@@ -431,7 +488,9 @@ test_expect_success 'OPT_NUMBER_CALLBACK() works' '
 cat >expect <<\EOF
 boolean: 0
 integer: 0
-magnitude: 0
+i16: 0
+unsigned: 0
+u16: 0
 timestamp: 0
 string: (not set)
 abbrev: 7
@@ -546,16 +605,16 @@ test_expect_success 'KEEP_UNKNOWN_OPT works' '
 
 test_expect_success 'NO_INTERNAL_HELP works for -h' '
 	test_expect_code 129 test-tool parse-options-flags --no-internal-help cmd -h 2>err &&
-	grep "^error: unknown switch \`h$SQ" err &&
-	grep "^usage: " err
+	test_grep "^error: unknown switch \`h$SQ" err &&
+	test_grep "^usage: " err
 '
 
 for help_opt in help help-all
 do
 	test_expect_success "NO_INTERNAL_HELP works for --$help_opt" "
 		test_expect_code 129 test-tool parse-options-flags --no-internal-help cmd --$help_opt 2>err &&
-		grep '^error: unknown option \`'$help_opt\' err &&
-		grep '^usage: ' err
+		test_grep '^error: unknown option \`'$help_opt\' err &&
+		test_grep '^usage: ' err
 	"
 done
 
@@ -570,40 +629,56 @@ test_expect_success 'KEEP_UNKNOWN_OPT | NO_INTERNAL_HELP works' '
 	test_cmp expect actual
 '
 
+test_expect_success 'subcommand - usage lists subcommands with help text under their group' '
+	test-tool parse-subcommand cmd -h >actual &&
+	cat >expect <<-\EOF &&
+	usage: <...> cmd subcmd-one
+	   or: <...> cmd subcmd-two
+
+	Subcommands
+	    subcmd-one            the first subcommand
+
+	Options
+	    -o, --[no-]opt <n>    an integer option
+
+	EOF
+	test_cmp expect actual
+'
+
 test_expect_success 'subcommand - no subcommand shows error and usage' '
 	test_expect_code 129 test-tool parse-subcommand cmd 2>err &&
-	grep "^error: need a subcommand" err &&
-	grep ^usage: err
+	test_grep "^error: need a subcommand" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - subcommand after -- shows error and usage' '
 	test_expect_code 129 test-tool parse-subcommand cmd -- subcmd-one 2>err &&
-	grep "^error: need a subcommand" err &&
-	grep ^usage: err
+	test_grep "^error: need a subcommand" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - subcommand after --end-of-options shows error and usage' '
 	test_expect_code 129 test-tool parse-subcommand cmd --end-of-options subcmd-one 2>err &&
-	grep "^error: need a subcommand" err &&
-	grep ^usage: err
+	test_grep "^error: need a subcommand" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - unknown subcommand shows error and usage' '
 	test_expect_code 129 test-tool parse-subcommand cmd nope 2>err &&
-	grep "^error: unknown subcommand: \`nope$SQ" err &&
-	grep ^usage: err
+	test_grep "^error: unknown subcommand: \`nope$SQ" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - subcommands cannot be abbreviated' '
 	test_expect_code 129 test-tool parse-subcommand cmd subcmd-o 2>err &&
-	grep "^error: unknown subcommand: \`subcmd-o$SQ$" err &&
-	grep ^usage: err
+	test_grep "^error: unknown subcommand: \`subcmd-o$SQ$" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - no negated subcommands' '
 	test_expect_code 129 test-tool parse-subcommand cmd no-subcmd-one 2>err &&
-	grep "^error: unknown subcommand: \`no-subcmd-one$SQ" err &&
-	grep ^usage: err
+	test_grep "^error: unknown subcommand: \`no-subcmd-one$SQ" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - simple' '
@@ -673,8 +748,8 @@ test_expect_success 'subcommand - SUBCOMMAND_OPTIONAL + subcommand not given + u
 
 test_expect_success 'subcommand - SUBCOMMAND_OPTIONAL + subcommand not given + unknown option' '
 	test_expect_code 129 test-tool parse-subcommand --subcommand-optional cmd --subcommand-opt 2>err &&
-	grep "^error: unknown option" err &&
-	grep ^usage: err
+	test_grep "^error: unknown option" err &&
+	test_grep ^usage: err
 '
 
 test_expect_success 'subcommand - SUBCOMMAND_OPTIONAL | KEEP_UNKNOWN_OPT + subcommand not given + unknown option' '
@@ -742,29 +817,369 @@ test_expect_success 'subcommand - completion helper' '
 
 test_expect_success 'subcommands are incompatible with STOP_AT_NON_OPTION' '
 	test_must_fail test-tool parse-subcommand --stop-at-non-option cmd subcmd-one 2>err &&
-	grep ^BUG err
+	test_grep ^BUG err
 '
 
 test_expect_success 'subcommands are incompatible with KEEP_UNKNOWN_OPT unless in combination with SUBCOMMAND_OPTIONAL' '
 	test_must_fail test-tool parse-subcommand --keep-unknown-opt cmd subcmd-two 2>err &&
-	grep ^BUG err
+	test_grep ^BUG err
 '
 
 test_expect_success 'subcommands are incompatible with KEEP_DASHDASH unless in combination with SUBCOMMAND_OPTIONAL' '
 	test_must_fail test-tool parse-subcommand --keep-dashdash cmd subcmd-two 2>err &&
-	grep ^BUG err
+	test_grep ^BUG err
 '
 
-test_expect_success 'negative magnitude' '
-	test_must_fail test-tool parse-options --magnitude -1 >out 2>err &&
-	grep "non-negative integer" err &&
+test_expect_success 'negative unsigned' '
+	test_must_fail test-tool parse-options --unsigned -1 >out 2>err &&
+	test_grep "non-negative integer" err &&
 	test_must_be_empty out
 '
 
-test_expect_success 'magnitude with units but no numbers' '
-	test_must_fail test-tool parse-options --magnitude m >out 2>err &&
-	grep "non-negative integer" err &&
+test_expect_success 'unsigned with units but no numbers' '
+	test_must_fail test-tool parse-options --unsigned m >out 2>err &&
+	test_grep "non-negative integer" err &&
 	test_must_be_empty out
+'
+
+test_expect_success 'i16 limits range' '
+	test-tool parse-options --i16 32767 >out &&
+	test_grep "i16: 32767" out &&
+	test_must_fail test-tool parse-options --i16 32768 2>err &&
+	test_grep "value 32768 for option .i16. not in range \[-32768,32767\]" err &&
+
+	test-tool parse-options --i16 -32768 >out &&
+	test_grep "i16: -32768" out &&
+	test_must_fail test-tool parse-options --i16 -32769 2>err &&
+	test_grep "value -32769 for option .i16. not in range \[-32768,32767\]" err
+'
+
+test_expect_success 'u16 limits range' '
+	test-tool parse-options --u16 65535 >out &&
+	test_grep "u16: 65535" out &&
+	test_must_fail test-tool parse-options --u16 65536 2>err &&
+	test_grep "value 65536 for option .u16. not in range \[0,65535\]" err
+'
+
+test_expect_success 'early_scan_options() finds a wanted option' '
+	test-tool early-scan-options --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 0
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() reads a stuck or separate value' '
+	test-tool early-scan-options --wanted-value=one >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 value: one
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --wanted-value two >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 value: two
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() skips the value of other options' '
+	test-tool early-scan-options --skipped-value --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --skipped-value one --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 2
+	stopped at: 3 of 3
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --number --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at a last option missing its value' '
+	test-tool early-scan-options --wanted-value >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 1
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --wanted --skipped-value >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 0
+	stopped at: 1 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() always stops at "--"' '
+	test-tool early-scan-options -- --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --stop-at-non-option -- --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --skipped-value -- --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 2
+	stopped at: 3 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() always stops at "--end-of-options"' '
+	test-tool early-scan-options --end-of-options --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --stop-at-non-option \
+		--end-of-options --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() can stop at a non-option' '
+	test-tool early-scan-options --stop-at-non-option \
+		arg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --stop-at-non-option \
+		--skipped-value arg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 2
+	stopped at: 3 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() matches unambiguous abbreviations' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool early-scan-options --wanted-v=x >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 value: x
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual &&
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool early-scan-options --wanted-v x --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 value: x
+	found: wanted at 2
+	stopped at: 3 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() skips the value of an abbreviation' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool early-scan-options --skipped --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at an ambiguous abbreviation' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool early-scan-options --want --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at disallowed abbreviations' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=true \
+	test-tool early-scan-options --wanted-v=x >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 1
+	EOF
+	test_cmp expect actual &&
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=true \
+	test-tool early-scan-options --skipped --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at an unknown option' '
+	test-tool early-scan-options --bogus --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() resolves aliases' '
+	test-tool early-scan-options --alias-of-skipped --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --alias-of-skipped x --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 2
+	stopped at: 3 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() does not skip an optional value' '
+	test-tool early-scan-options --optarg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 1
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --optarg=5 --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 1
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() skips a last argument default value' '
+	test-tool early-scan-options --lastarg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --wanted --lastarg >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 0
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() matches a stuck optional value' '
+	test-tool early-scan-options --early-optarg=one >actual &&
+	cat >expect <<-\EOF &&
+	found: early-optarg at 0 value: one
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --early-lastarg=two >actual &&
+	cat >expect <<-\EOF &&
+	found: early-lastarg at 0 value: two
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() does not take a separate optional value' '
+	test-tool early-scan-options --early-optarg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: early-optarg at 0
+	found: wanted at 1
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() takes a last argument default value' '
+	test-tool early-scan-options --early-lastarg --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: early-lastarg at 0 value: --wanted
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --early-lastarg >actual &&
+	cat >expect <<-\EOF &&
+	found: early-lastarg at 0
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at short options' '
+	test-tool early-scan-options -s --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops at low-level callbacks' '
+	test-tool early-scan-options --low-level --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --ll-value x --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() stops after what the callback consumed' '
+	test-tool early-scan-options --stop-at-found --wanted --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 0
+	stopped at: 1 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --stop-at-found \
+		--wanted-value x --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 value: x
+	stopped at: 2 of 3
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() reports negated options' '
+	test-tool early-scan-options --no-wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted at 0 unset
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --early >actual &&
+	cat >expect <<-\EOF &&
+	found: no-early at 0 unset
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --no-early >actual &&
+	cat >expect <<-\EOF &&
+	found: no-early at 0
+	stopped at: 1 of 1
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'early_scan_options() does not take a value for negated options' '
+	test-tool early-scan-options --no-wanted-value --wanted >actual &&
+	cat >expect <<-\EOF &&
+	found: wanted-value at 0 unset
+	found: wanted at 1
+	stopped at: 2 of 2
+	EOF
+	test_cmp expect actual &&
+	test-tool early-scan-options --no-wanted-value=x --wanted >actual &&
+	cat >expect <<-\EOF &&
+	stopped at: 0 of 2
+	EOF
+	test_cmp expect actual
 '
 
 test_done

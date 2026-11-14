@@ -5,10 +5,13 @@
  *
  * Fetch one or more remote refs and merge it/them into the current HEAD.
  */
-#define USE_THE_INDEX_VARIABLE
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "builtin.h"
 #include "advice.h"
 #include "config.h"
+#include "environment.h"
 #include "gettext.h"
 #include "hex.h"
 #include "merge.h"
@@ -71,188 +74,50 @@ static const char * const pull_usage[] = {
 
 /* Shared options */
 static int opt_verbosity;
-static char *opt_progress;
+static const char *opt_progress;
 static int recurse_submodules = RECURSE_SUBMODULES_DEFAULT;
 static int recurse_submodules_cli = RECURSE_SUBMODULES_DEFAULT;
 
 /* Options passed to git-merge or git-rebase */
 static enum rebase_type opt_rebase = -1;
-static char *opt_diffstat;
-static char *opt_log;
-static char *opt_signoff;
-static char *opt_squash;
-static char *opt_commit;
-static char *opt_edit;
-static char *cleanup_arg;
+static const char *opt_diffstat;
+static const char *opt_log;
+static const char *opt_signoff;
+static const char *opt_squash;
+static const char *opt_commit;
+static const char *opt_edit;
+static const char *cleanup_arg;
 static char *opt_ff;
-static char *opt_verify_signatures;
-static char *opt_verify;
+static const char *opt_verify_signatures;
+static const char *opt_verify;
 static int opt_autostash = -1;
-static int config_autostash;
+static int config_rebase_autostash;
+static int config_pull_autostash = -1;
 static int check_trust_level = 1;
 static struct strvec opt_strategies = STRVEC_INIT;
 static struct strvec opt_strategy_opts = STRVEC_INIT;
-static char *opt_gpg_sign;
+static const char *opt_gpg_sign;
 static int opt_allow_unrelated_histories;
 
 /* Options passed to git-fetch */
-static char *opt_all;
-static char *opt_append;
-static char *opt_upload_pack;
+static const char *opt_all;
+static const char *opt_append;
+static const char *opt_upload_pack;
 static int opt_force;
-static char *opt_tags;
-static char *opt_prune;
-static char *max_children;
+static const char *opt_tags;
+static const char *opt_prune;
+static const char *max_children;
 static int opt_dry_run;
-static char *opt_keep;
-static char *opt_depth;
-static char *opt_unshallow;
-static char *opt_update_shallow;
-static char *opt_refmap;
-static char *opt_ipv4;
-static char *opt_ipv6;
+static const char *opt_keep;
+static const char *opt_depth;
+static const char *opt_unshallow;
+static const char *opt_update_shallow;
+static const char *opt_refmap;
+static const char *opt_ipv4;
+static const char *opt_ipv6;
 static int opt_show_forced_updates = -1;
-static char *set_upstream;
+static const char *set_upstream;
 static struct strvec opt_fetch = STRVEC_INIT;
-
-static struct option pull_options[] = {
-	/* Shared options */
-	OPT__VERBOSITY(&opt_verbosity),
-	OPT_PASSTHRU(0, "progress", &opt_progress, NULL,
-		N_("force progress reporting"),
-		PARSE_OPT_NOARG),
-	OPT_CALLBACK_F(0, "recurse-submodules",
-		   &recurse_submodules_cli, N_("on-demand"),
-		   N_("control for recursive fetching of submodules"),
-		   PARSE_OPT_OPTARG, option_fetch_parse_recurse_submodules),
-
-	/* Options passed to git-merge or git-rebase */
-	OPT_GROUP(N_("Options related to merging")),
-	OPT_CALLBACK_F('r', "rebase", &opt_rebase,
-		"(false|true|merges|interactive)",
-		N_("incorporate changes by rebasing rather than merging"),
-		PARSE_OPT_OPTARG, parse_opt_rebase),
-	OPT_PASSTHRU('n', NULL, &opt_diffstat, NULL,
-		N_("do not show a diffstat at the end of the merge"),
-		PARSE_OPT_NOARG | PARSE_OPT_NONEG),
-	OPT_PASSTHRU(0, "stat", &opt_diffstat, NULL,
-		N_("show a diffstat at the end of the merge"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "summary", &opt_diffstat, NULL,
-		N_("(synonym to --stat)"),
-		PARSE_OPT_NOARG | PARSE_OPT_HIDDEN),
-	OPT_PASSTHRU(0, "log", &opt_log, N_("n"),
-		N_("add (at most <n>) entries from shortlog to merge commit message"),
-		PARSE_OPT_OPTARG),
-	OPT_PASSTHRU(0, "signoff", &opt_signoff, NULL,
-		N_("add a Signed-off-by trailer"),
-		PARSE_OPT_OPTARG),
-	OPT_PASSTHRU(0, "squash", &opt_squash, NULL,
-		N_("create a single commit instead of doing a merge"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "commit", &opt_commit, NULL,
-		N_("perform a commit if the merge succeeds (default)"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "edit", &opt_edit, NULL,
-		N_("edit message before committing"),
-		PARSE_OPT_NOARG),
-	OPT_CLEANUP(&cleanup_arg),
-	OPT_PASSTHRU(0, "ff", &opt_ff, NULL,
-		N_("allow fast-forward"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "ff-only", &opt_ff, NULL,
-		N_("abort if fast-forward is not possible"),
-		PARSE_OPT_NOARG | PARSE_OPT_NONEG),
-	OPT_PASSTHRU(0, "verify", &opt_verify, NULL,
-		N_("control use of pre-merge-commit and commit-msg hooks"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "verify-signatures", &opt_verify_signatures, NULL,
-		N_("verify that the named commit has a valid GPG signature"),
-		PARSE_OPT_NOARG),
-	OPT_BOOL(0, "autostash", &opt_autostash,
-		N_("automatically stash/stash pop before and after")),
-	OPT_PASSTHRU_ARGV('s', "strategy", &opt_strategies, N_("strategy"),
-		N_("merge strategy to use"),
-		0),
-	OPT_PASSTHRU_ARGV('X', "strategy-option", &opt_strategy_opts,
-		N_("option=value"),
-		N_("option for selected merge strategy"),
-		0),
-	OPT_PASSTHRU('S', "gpg-sign", &opt_gpg_sign, N_("key-id"),
-		N_("GPG sign commit"),
-		PARSE_OPT_OPTARG),
-	OPT_SET_INT(0, "allow-unrelated-histories",
-		    &opt_allow_unrelated_histories,
-		    N_("allow merging unrelated histories"), 1),
-
-	/* Options passed to git-fetch */
-	OPT_GROUP(N_("Options related to fetching")),
-	OPT_PASSTHRU(0, "all", &opt_all, NULL,
-		N_("fetch from all remotes"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU('a', "append", &opt_append, NULL,
-		N_("append to .git/FETCH_HEAD instead of overwriting"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "upload-pack", &opt_upload_pack, N_("path"),
-		N_("path to upload pack on remote end"),
-		0),
-	OPT__FORCE(&opt_force, N_("force overwrite of local branch"), 0),
-	OPT_PASSTHRU('t', "tags", &opt_tags, NULL,
-		N_("fetch all tags and associated objects"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU('p', "prune", &opt_prune, NULL,
-		N_("prune remote-tracking branches no longer on remote"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU('j', "jobs", &max_children, N_("n"),
-		N_("number of submodules pulled in parallel"),
-		PARSE_OPT_OPTARG),
-	OPT_BOOL(0, "dry-run", &opt_dry_run,
-		N_("dry run")),
-	OPT_PASSTHRU('k', "keep", &opt_keep, NULL,
-		N_("keep downloaded pack"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "depth", &opt_depth, N_("depth"),
-		N_("deepen history of shallow clone"),
-		0),
-	OPT_PASSTHRU_ARGV(0, "shallow-since", &opt_fetch, N_("time"),
-		N_("deepen history of shallow repository based on time"),
-		0),
-	OPT_PASSTHRU_ARGV(0, "shallow-exclude", &opt_fetch, N_("revision"),
-		N_("deepen history of shallow clone, excluding rev"),
-		0),
-	OPT_PASSTHRU_ARGV(0, "deepen", &opt_fetch, N_("n"),
-		N_("deepen history of shallow clone"),
-		0),
-	OPT_PASSTHRU(0, "unshallow", &opt_unshallow, NULL,
-		N_("convert to a complete repository"),
-		PARSE_OPT_NONEG | PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "update-shallow", &opt_update_shallow, NULL,
-		N_("accept refs that update .git/shallow"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU(0, "refmap", &opt_refmap, N_("refmap"),
-		N_("specify fetch refmap"),
-		PARSE_OPT_NONEG),
-	OPT_PASSTHRU_ARGV('o', "server-option", &opt_fetch,
-		N_("server-specific"),
-		N_("option to transmit"),
-		0),
-	OPT_PASSTHRU('4',  "ipv4", &opt_ipv4, NULL,
-		N_("use IPv4 addresses only"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU('6',  "ipv6", &opt_ipv6, NULL,
-		N_("use IPv6 addresses only"),
-		PARSE_OPT_NOARG),
-	OPT_PASSTHRU_ARGV(0, "negotiation-tip", &opt_fetch, N_("revision"),
-		N_("report that we have only objects reachable from this object"),
-		0),
-	OPT_BOOL(0, "show-forced-updates", &opt_show_forced_updates,
-		 N_("check for forced-updates on all updated branches")),
-	OPT_PASSTHRU(0, "set-upstream", &set_upstream, NULL,
-		N_("set upstream for git pull/fetch"),
-		PARSE_OPT_NOARG),
-
-	OPT_END()
-};
 
 /**
  * Pushes "-q" or "-v" switches into arr to match the opt_verbosity level.
@@ -307,7 +172,7 @@ static const char *config_get_ff(void)
 {
 	const char *value;
 
-	if (git_config_get_value("pull.ff", &value))
+	if (repo_config_get_value(the_repository, "pull.ff", &value))
 		return NULL;
 
 	switch (git_parse_maybe_bool(value)) {
@@ -338,7 +203,7 @@ static enum rebase_type config_get_rebase(int *rebase_unspecified)
 	if (curr_branch) {
 		char *key = xstrfmt("branch.%s.rebase", curr_branch->name);
 
-		if (!git_config_get_value(key, &value)) {
+		if (!repo_config_get_value(the_repository, key, &value)) {
 			enum rebase_type ret = parse_config_rebase(key, value, 1);
 			free(key);
 			return ret;
@@ -347,7 +212,7 @@ static enum rebase_type config_get_rebase(int *rebase_unspecified)
 		free(key);
 	}
 
-	if (!git_config_get_value("pull.rebase", &value))
+	if (!repo_config_get_value(the_repository, "pull.rebase", &value))
 		return parse_config_rebase("pull.rebase", value, 1);
 
 	*rebase_unspecified = 1;
@@ -362,7 +227,18 @@ static int git_pull_config(const char *var, const char *value,
 			   const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "rebase.autostash")) {
-		config_autostash = git_config_bool(var, value);
+		/*
+		 * run_rebase() also reads this option. The reason we handle it here is
+		 * that when pull.rebase is true, a fast-forward may occur without
+		 * invoking run_rebase(). We need to ensure that autostash is set even
+		 * in the fast-forward case.
+		 *
+		 * run_merge() handles merge.autostash, so we don't handle it here.
+		 */
+		config_rebase_autostash = git_config_bool(var, value);
+		return 0;
+	} else if (!strcmp(var, "pull.autostash")) {
+		config_pull_autostash = git_config_bool(var, value);
 		return 0;
 	} else if (!strcmp(var, "submodule.recurse")) {
 		recurse_submodules = git_config_bool(var, value) ?
@@ -485,7 +361,7 @@ static void NORETURN die_no_merge_candidates(const char *repo, const char **refs
 	} else
 		fprintf_ln(stderr, _("Your configuration specifies to merge with the ref '%s'\n"
 			"from the remote, but no such ref was fetched."),
-			*curr_branch->merge_name);
+			curr_branch->merge[0]->src);
 	exit(1);
 }
 
@@ -578,7 +454,7 @@ static int run_fetch(const char *repo, const char **refspecs)
 	} else if (*refspecs)
 		BUG("refspecs without repo?");
 	cmd.git_cmd = 1;
-	cmd.close_object_store = 1;
+	cmd.odb_to_close = the_repository->objects;
 	return run_command(&cmd);
 }
 
@@ -611,7 +487,7 @@ static int pull_into_void(const struct object_id *merge_head,
 				  merge_head, 0))
 		return 1;
 
-	if (update_ref("initial pull", "HEAD", merge_head, curr_head, 0, UPDATE_REFS_DIE_ON_ERR))
+	if (refs_update_ref(get_main_ref_store(the_repository), "initial pull", "HEAD", merge_head, curr_head, 0, UPDATE_REFS_DIE_ON_ERR))
 		return 1;
 
 	return 0;
@@ -736,7 +612,8 @@ static const char *get_tracking_branch(const char *remote, const char *refspec)
 	const char *spec_src;
 	const char *merge_branch;
 
-	refspec_item_init_or_die(&spec, refspec, REFSPEC_FETCH);
+	if (!refspec_item_init_fetch(&spec, refspec, the_hash_algo))
+		die(_("invalid refspec '%s'"), refspec);
 	spec_src = spec.src;
 	if (!*spec_src || !strcmp(spec_src, "HEAD"))
 		spec_src = "HEAD";
@@ -827,14 +704,14 @@ static int get_octopus_merge_base(struct object_id *merge_base,
 
 	if (get_octopus_merge_bases(revs, &result) < 0)
 		exit(128);
-	free_commit_list(revs);
+	commit_list_free(revs);
 	reduce_heads_replace(&result);
 
 	if (!result)
 		return 1;
 
 	oidcpy(merge_base, &result->item->object.oid);
-	free_commit_list(result);
+	commit_list_free(result);
 	return 0;
 }
 
@@ -923,10 +800,14 @@ static int get_can_ff(struct object_id *orig_head,
 
 	orig_merge_head = &merge_heads->oid[0];
 	head = lookup_commit_reference(the_repository, orig_head);
-	commit_list_insert(head, &list);
+	if (!head)
+		return 0;
 	merge_head = lookup_commit_reference(the_repository, orig_merge_head);
+	if (!merge_head)
+		return 0;
+	commit_list_insert(head, &list);
 	ret = repo_is_descendant_of(the_repository, merge_head, list);
-	free_commit_list(list);
+	commit_list_free(list);
 	if (ret < 0)
 		exit(128);
 	return ret;
@@ -940,19 +821,22 @@ static int get_can_ff(struct object_id *orig_head,
 static int already_up_to_date(struct object_id *orig_head,
 			      struct oid_array *merge_heads)
 {
-	int i;
 	struct commit *ours;
 
 	ours = lookup_commit_reference(the_repository, orig_head);
-	for (i = 0; i < merge_heads->nr; i++) {
+	if (!ours)
+		return 0;
+	for (size_t i = 0; i < merge_heads->nr; i++) {
 		struct commit_list *list = NULL;
 		struct commit *theirs;
 		int ok;
 
 		theirs = lookup_commit_reference(the_repository, &merge_heads->oid[i]);
+		if (!theirs)
+			return 0;
 		commit_list_insert(theirs, &list);
 		ok = repo_is_descendant_of(the_repository, ours, list);
-		free_commit_list(list);
+		commit_list_free(list);
 		if (ok < 0)
 			exit(128);
 		if (!ok)
@@ -977,7 +861,10 @@ static void show_advice_pull_non_ff(void)
 		 "invocation.\n"));
 }
 
-int cmd_pull(int argc, const char **argv, const char *prefix)
+int cmd_pull(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repository UNUSED)
 {
 	const char *repo, **refspecs;
 	struct oid_array merge_heads = OID_ARRAY_INIT;
@@ -987,17 +874,164 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 	int can_ff;
 	int divergent;
 	int ret;
+	static struct option pull_options[] = {
+		/* Shared options */
+		OPT__VERBOSITY(&opt_verbosity),
+		OPT_PASSTHRU(0, "progress", &opt_progress, NULL,
+			N_("force progress reporting"),
+			PARSE_OPT_NOARG),
+		OPT_CALLBACK_F(0, "recurse-submodules",
+			   &recurse_submodules_cli, N_("on-demand"),
+			   N_("control for recursive fetching of submodules"),
+			   PARSE_OPT_OPTARG, option_fetch_parse_recurse_submodules),
+
+		/* Options passed to git-merge or git-rebase */
+		OPT_GROUP(N_("Options related to merging")),
+		OPT_CALLBACK_F('r', "rebase", &opt_rebase,
+			"(false|true|merges|interactive)",
+			N_("incorporate changes by rebasing rather than merging"),
+			PARSE_OPT_OPTARG, parse_opt_rebase),
+		OPT_PASSTHRU('n', NULL, &opt_diffstat, NULL,
+			N_("do not show a diffstat at the end of the merge"),
+			PARSE_OPT_NOARG | PARSE_OPT_NONEG),
+		OPT_PASSTHRU(0, "stat", &opt_diffstat, NULL,
+			N_("show a diffstat at the end of the merge"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "summary", &opt_diffstat, NULL,
+			N_("(synonym to --stat)"),
+			PARSE_OPT_NOARG | PARSE_OPT_HIDDEN),
+		OPT_PASSTHRU(0, "compact-summary", &opt_diffstat, NULL,
+			N_("show a compact-summary at the end of the merge"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "log", &opt_log, N_("n"),
+			N_("add (at most <n>) entries from shortlog to merge commit message"),
+			PARSE_OPT_OPTARG),
+		OPT_PASSTHRU(0, "signoff", &opt_signoff, NULL,
+			N_("add a Signed-off-by trailer"),
+			PARSE_OPT_OPTARG),
+		OPT_PASSTHRU(0, "squash", &opt_squash, NULL,
+			N_("create a single commit instead of doing a merge"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "commit", &opt_commit, NULL,
+			N_("perform a commit if the merge succeeds (default)"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "edit", &opt_edit, NULL,
+			N_("edit message before committing"),
+			PARSE_OPT_NOARG),
+		OPT_CLEANUP(&cleanup_arg),
+		OPT_PASSTHRU(0, "ff", &opt_ff, NULL,
+			N_("allow fast-forward"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "ff-only", &opt_ff, NULL,
+			N_("abort if fast-forward is not possible"),
+			PARSE_OPT_NOARG | PARSE_OPT_NONEG),
+		OPT_PASSTHRU(0, "verify", &opt_verify, NULL,
+			N_("control use of pre-merge-commit and commit-msg hooks"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "verify-signatures", &opt_verify_signatures, NULL,
+			N_("verify that the named commit has a valid GPG signature"),
+			PARSE_OPT_NOARG),
+		OPT_BOOL(0, "autostash", &opt_autostash,
+			N_("automatically stash/stash pop before and after")),
+		OPT_PASSTHRU_ARGV('s', "strategy", &opt_strategies, N_("strategy"),
+			N_("merge strategy to use"),
+			0),
+		OPT_PASSTHRU_ARGV('X', "strategy-option", &opt_strategy_opts,
+			N_("option=value"),
+			N_("option for selected merge strategy"),
+			0),
+		OPT_PASSTHRU('S', "gpg-sign", &opt_gpg_sign, N_("key-id"),
+			N_("GPG sign commit"),
+			PARSE_OPT_OPTARG),
+		OPT_SET_INT(0, "allow-unrelated-histories",
+			    &opt_allow_unrelated_histories,
+			    N_("allow merging unrelated histories"), 1),
+
+		/* Options passed to git-fetch */
+		OPT_GROUP(N_("Options related to fetching")),
+		OPT_PASSTHRU(0, "all", &opt_all, NULL,
+			N_("fetch from all remotes"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU('a', "append", &opt_append, NULL,
+			N_("append to .git/FETCH_HEAD instead of overwriting"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "upload-pack", &opt_upload_pack, N_("path"),
+			N_("path to upload pack on remote end"),
+			0),
+		OPT__FORCE(&opt_force, N_("force overwrite of local branch"), 0),
+		OPT_PASSTHRU('t', "tags", &opt_tags, NULL,
+			N_("fetch all tags and associated objects"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU('p', "prune", &opt_prune, NULL,
+			N_("prune remote-tracking branches no longer on remote"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU('j', "jobs", &max_children, N_("n"),
+			N_("number of submodules pulled in parallel"),
+			PARSE_OPT_OPTARG),
+		OPT_BOOL(0, "dry-run", &opt_dry_run,
+			N_("dry run")),
+		OPT_PASSTHRU('k', "keep", &opt_keep, NULL,
+			N_("keep downloaded pack"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "depth", &opt_depth, N_("depth"),
+			N_("deepen history of shallow clone"),
+			0),
+		OPT_PASSTHRU_ARGV(0, "shallow-since", &opt_fetch, N_("time"),
+			N_("deepen history of shallow repository based on time"),
+			0),
+		OPT_PASSTHRU_ARGV(0, "shallow-exclude", &opt_fetch, N_("ref"),
+			N_("deepen history of shallow clone, excluding ref"),
+			0),
+		OPT_PASSTHRU_ARGV(0, "deepen", &opt_fetch, N_("n"),
+			N_("deepen history of shallow clone"),
+			0),
+		OPT_PASSTHRU(0, "unshallow", &opt_unshallow, NULL,
+			N_("convert to a complete repository"),
+			PARSE_OPT_NONEG | PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "update-shallow", &opt_update_shallow, NULL,
+			N_("accept refs that update .git/shallow"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU(0, "refmap", &opt_refmap, N_("refmap"),
+			N_("specify fetch refmap"),
+			PARSE_OPT_NONEG),
+		OPT_PASSTHRU_ARGV('o', "server-option", &opt_fetch,
+			N_("server-specific"),
+			N_("option to transmit"),
+			0),
+		OPT_PASSTHRU('4',  "ipv4", &opt_ipv4, NULL,
+			N_("use IPv4 addresses only"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU('6',  "ipv6", &opt_ipv6, NULL,
+			N_("use IPv6 addresses only"),
+			PARSE_OPT_NOARG),
+		OPT_PASSTHRU_ARGV(0, "negotiation-restrict", &opt_fetch, N_("revision"),
+			N_("report that we have only objects reachable from this object"),
+			0),
+		OPT_ALIAS(0, "negotiation-tip", "negotiation-restrict"),
+		OPT_PASSTHRU_ARGV(0, "negotiation-include", &opt_fetch, N_("revision"),
+			N_("ensure this ref is always sent as a negotiation have"),
+			0),
+		OPT_BOOL(0, "show-forced-updates", &opt_show_forced_updates,
+			 N_("check for forced-updates on all updated branches")),
+		OPT_PASSTHRU(0, "set-upstream", &set_upstream, NULL,
+			N_("set upstream for git pull/fetch"),
+			PARSE_OPT_NOARG),
+
+		OPT_END()
+	};
 
 	if (!getenv("GIT_REFLOG_ACTION"))
 		set_reflog_message(argc, argv);
 
-	git_config(git_pull_config, NULL);
+	repo_config(the_repository, git_pull_config, NULL);
 	if (the_repository->gitdir) {
 		prepare_repo_settings(the_repository);
 		the_repository->settings.command_requires_full_index = 0;
 	}
 
 	argc = parse_options(argc, argv, prefix, pull_options, pull_usage, 0);
+	if (opt_autostash == -1)
+		opt_autostash = config_pull_autostash;
 
 	if (recurse_submodules_cli != RECURSE_SUBMODULES_DEFAULT)
 		recurse_submodules = recurse_submodules_cli;
@@ -1024,8 +1058,10 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 		 * "--rebase" can override a config setting of
 		 * pull.ff=only.
 		 */
-		if (opt_rebase >= 0 && opt_ff && !strcmp(opt_ff, "--ff-only"))
-			opt_ff = "--ff";
+		if (opt_rebase >= 0 && opt_ff && !strcmp(opt_ff, "--ff-only")) {
+			free(opt_ff);
+			opt_ff = xstrdup("--ff");
+		}
 	}
 
 	if (opt_rebase < 0)
@@ -1038,13 +1074,13 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 		die_conclude_merge();
 
 	if (repo_get_oid(the_repository, "HEAD", &orig_head))
-		oidclr(&orig_head);
+		oidclr(&orig_head, the_repository->hash_algo);
 
 	if (opt_rebase) {
 		if (opt_autostash == -1)
-			opt_autostash = config_autostash;
+			opt_autostash = config_rebase_autostash;
 
-		if (is_null_oid(&orig_head) && !is_index_unborn(&the_index))
+		if (is_null_oid(&orig_head) && !is_index_unborn(the_repository->index))
 			die(_("Updating an unborn branch with changes added to the index."));
 
 		if (!opt_autostash)
@@ -1053,7 +1089,7 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 				_("Please commit or stash them."), 1, 0);
 
 		if (get_rebase_fork_point(&rebase_fork_point, repo, *refspecs))
-			oidclr(&rebase_fork_point);
+			oidclr(&rebase_fork_point, the_repository->hash_algo);
 	}
 
 	if (run_fetch(repo, refspecs))
@@ -1063,7 +1099,7 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 		return 0;
 
 	if (repo_get_oid(the_repository, "HEAD", &curr_head))
-		oidclr(&curr_head);
+		oidclr(&curr_head, the_repository->hash_algo);
 
 	if (!is_null_oid(&orig_head) && !is_null_oid(&curr_head) &&
 			!oideq(&orig_head, &curr_head)) {
@@ -1135,7 +1171,8 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 
 		if (can_ff) {
 			/* we can fast-forward this without invoking rebase */
-			opt_ff = "--ff-only";
+			free(opt_ff);
+			opt_ff = xstrdup("--ff-only");
 			ret = run_merge();
 		} else {
 			ret = run_rebase(&newbase, &upstream);

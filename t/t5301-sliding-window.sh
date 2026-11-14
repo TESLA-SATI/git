@@ -5,7 +5,6 @@
 
 test_description='mmap sliding window tests'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -13,7 +12,7 @@ test_expect_success 'setup' '
 	for i in a b c
 	do
 	echo $i >$i &&
-	test-tool genrandom "$i" 32768 >>$i &&
+	test-tool genrandom "$i" 32k >>$i &&
 	git update-index --add $i || return 1
 	done &&
 	echo d >d && cat c >>d && git update-index --add d &&
@@ -23,7 +22,7 @@ test_expect_success 'setup' '
 	git repack -a -d &&
 	test "$(git count-objects)" = "0 objects, 0 kilobytes" &&
 	pack1=$(ls .git/objects/pack/*.pack) &&
-	test -f "$pack1"
+	test_path_is_file "$pack1"
 '
 
 test_expect_success 'verify-pack -v, defaults' '
@@ -49,7 +48,7 @@ test_expect_success 'repack -a -d, packedGit{WindowSize,Limit} == 1 page' '
 	git repack -a -d &&
 	test "$(git count-objects)" = "0 objects, 0 kilobytes" &&
 	pack2=$(ls .git/objects/pack/*.pack) &&
-	test -f "$pack2" &&
+	test_path_is_file "$pack2" &&
 	test "$pack1" \!= "$pack2"
 '
 

@@ -15,7 +15,6 @@ test_description='CRLF merge conflict across text=auto change
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_have_prereq SED_STRIPS_CR && SED_OPTIONS=-b
@@ -227,7 +226,7 @@ test_expect_success 'rename/delete vs. renormalization' '
 		git checkout rename^0 &&
 		test_must_fail git -c merge.renormalize=true merge nuke >out &&
 
-		grep "rename/delete" out
+		test_grep "rename/delete" out
 	)
 '
 

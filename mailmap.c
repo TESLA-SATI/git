@@ -3,11 +3,9 @@
 #include "string-list.h"
 #include "mailmap.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "setup.h"
-
-const char *git_mailmap_file;
-const char *git_mailmap_blob;
+#include "config.h"
 
 struct mailmap_info {
 	char *name;
@@ -140,11 +138,8 @@ static void read_mailmap_line(struct string_list *map, char *buffer)
 		add_mapping(map, name1, email1, name2, email2);
 }
 
-/* Flags for read_mailmap_file() */
-#define MAILMAP_NOFOLLOW (1<<0)
-
-static int read_mailmap_file(struct string_list *map, const char *filename,
-			     unsigned flags)
+int read_mailmap_file(struct string_list *map, const char *filename,
+		      unsigned flags)
 {
 	char buffer[1024];
 	FILE *f;
@@ -184,23 +179,26 @@ static void read_mailmap_string(struct string_list *map, char *buf)
 	}
 }
 
-static int read_mailmap_blob(struct string_list *map, const char *name)
+int read_mailmap_blob(struct repository *repo, struct string_list *map,
+		      const char *name)
 {
 	struct object_id oid;
 	char *buf;
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 
 	if (!name)
 		return 0;
-	if (repo_get_oid(the_repository, name, &oid) < 0)
+	if (repo_get_oid(repo, name, &oid) < 0)
 		return 0;
 
-	buf = repo_read_object_file(the_repository, &oid, &type, &size);
+	buf = odb_read_object(repo->objects, &oid, &type, &size);
 	if (!buf)
 		return error("unable to read mailmap object at %s", name);
-	if (type != OBJ_BLOB)
+	if (type != OBJ_BLOB) {
+		free(buf);
 		return error("mailmap is not a blob: %s", name);
+	}
 
 	read_mailmap_string(map, buf);
 
@@ -208,23 +206,32 @@ static int read_mailmap_blob(struct string_list *map, const char *name)
 	return 0;
 }
 
-int read_mailmap(struct string_list *map)
+int read_mailmap(struct repository *repo, struct string_list *map)
 {
 	int err = 0;
+	char *mailmap_file = NULL, *mailmap_blob = NULL;
+
+	repo_config_get_pathname(repo, "mailmap.file", &mailmap_file);
+	repo_config_get_string(repo, "mailmap.blob", &mailmap_blob);
 
 	map->strdup_strings = 1;
 	map->cmp = namemap_cmp;
 
-	if (!git_mailmap_blob && is_bare_repository())
-		git_mailmap_blob = "HEAD:.mailmap";
+	if (!mailmap_blob && is_bare_repository(repo))
+		mailmap_blob = xstrdup("HEAD:.mailmap");
 
-	if (!startup_info->have_repository || !is_bare_repository())
+	if (!startup_info->have_repository || !is_bare_repository(repo))
 		err |= read_mailmap_file(map, ".mailmap",
 					 startup_info->have_repository ?
 					 MAILMAP_NOFOLLOW : 0);
 	if (startup_info->have_repository)
-		err |= read_mailmap_blob(map, git_mailmap_blob);
-	err |= read_mailmap_file(map, git_mailmap_file, 0);
+		err |= read_mailmap_blob(repo, map, mailmap_blob);
+
+	err |= read_mailmap_file(map, mailmap_file, 0);
+
+	free(mailmap_file);
+	free(mailmap_blob);
+
 	return err;
 }
 
@@ -241,10 +248,9 @@ void clear_mailmap(struct string_list *map)
 static struct string_list_item *lookup_prefix(struct string_list *map,
 					      const char *string, size_t len)
 {
-	int i = string_list_find_insert_index(map, string, 1);
-	if (i < 0) {
-		/* exact match */
-		i = -1 - i;
+	bool exact_match;
+	size_t i = string_list_find_insert_index(map, string, &exact_match);
+	if (exact_match) {
 		if (!string[len])
 			return &map->items[i];
 		/*
@@ -265,7 +271,7 @@ static struct string_list_item *lookup_prefix(struct string_list *map,
 	 * overlong key would be inserted, which must come after the
 	 * real location of the key if one exists.
 	 */
-	while (0 <= --i && i < map->nr) {
+	while (i-- && i < map->nr) {
 		int cmp = strncasecmp(map->items[i].string, string, len);
 		if (cmp < 0)
 			/*

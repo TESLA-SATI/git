@@ -1,9 +1,12 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "environment.h"
 #include "refs.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "diff.h"
 #include "diff-merges.h"
 #include "hex.h"
@@ -23,13 +26,15 @@ static struct string_list suppress_dest_patterns = STRING_LIST_INIT_DUP;
 int fmt_merge_msg_config(const char *key, const char *value,
 			 const struct config_context *ctx, void *cb)
 {
+	int *merge_log_config = cb;
+
 	if (!strcmp(key, "merge.log") || !strcmp(key, "merge.summary")) {
 		int is_bool;
-		merge_log_config = git_config_bool_or_int(key, value, ctx->kvi, &is_bool);
-		if (!is_bool && merge_log_config < 0)
+		*merge_log_config = git_config_bool_or_int(key, value, ctx->kvi, &is_bool);
+		if (!is_bool && *merge_log_config < 0)
 			return error("%s: negative length %s", key, value);
-		if (is_bool && merge_log_config)
-			merge_log_config = DEFAULT_MERGE_LOG_LEN;
+		if (is_bool && *merge_log_config)
+			*merge_log_config = DEFAULT_MERGE_LOG_LEN;
 	} else if (!strcmp(key, "merge.branchdesc")) {
 		use_branch_desc = git_config_bool(key, value);
 	} else if (!strcmp(key, "merge.suppressdest")) {
@@ -241,7 +246,8 @@ static void add_branch_desc(struct strbuf *out, const char *name)
 static void record_person_from_buf(int which, struct string_list *people,
 				   const char *buffer)
 {
-	char *name_buf, *name, *name_end;
+	char *name_buf;
+	const char *name, *name_end;
 	struct string_list_item *elem;
 	const char *field;
 
@@ -416,7 +422,7 @@ static void shortlog(const char *name,
 
 	clear_commit_marks((struct commit *)branch, flags);
 	clear_commit_marks(head, flags);
-	free_commit_list(rev->commits);
+	commit_list_free(rev->commits);
 	rev->commits = NULL;
 	rev->pending.nr = 0;
 
@@ -447,7 +453,7 @@ static void fmt_merge_msg_title(struct strbuf *out,
 				const char *current_branch)
 {
 	int i = 0;
-	char *sep = "";
+	const char *sep = "";
 
 	strbuf_addstr(out, "Merge ");
 	for (i = 0; i < srcs.nr; i++) {
@@ -522,11 +528,11 @@ static void fmt_merge_msg_sigs(struct strbuf *out)
 	for (i = 0; i < origins.nr; i++) {
 		struct object_id *oid = origins.items[i].util;
 		enum object_type type;
-		unsigned long size;
-		char *buf = repo_read_object_file(the_repository, oid, &type,
-						  &size);
+		size_t size;
+		char *buf = odb_read_object(the_repository->objects, oid,
+					    &type, &size);
 		char *origbuf = buf;
-		unsigned long len = size;
+		size_t len = size;
 		struct signature_check sigc = { NULL };
 		struct strbuf payload = STRBUF_INIT, sig = STRBUF_INIT;
 
@@ -661,7 +667,9 @@ int fmt_merge_msg(struct strbuf *in, struct strbuf *out,
 
 	/* learn the commit that we merge into and the current branch name */
 	current_branch = current_branch_to_free =
-		resolve_refdup("HEAD", RESOLVE_REF_READING, &head_oid, NULL);
+		refs_resolve_refdup(get_main_ref_store(the_repository),
+				    "HEAD", RESOLVE_REF_READING, &head_oid,
+				    NULL);
 	if (!current_branch)
 		die("No current branch");
 

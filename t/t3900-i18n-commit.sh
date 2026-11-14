@@ -7,6 +7,12 @@ test_description='commit and log output encodings'
 
 . ./test-lib.sh
 
+if ! test_have_prereq ICONV
+then
+	skip_all='skipping commit i18n tests; iconv not available'
+	test_done
+fi
+
 compare_with () {
 	git show -s $1 | sed -e '1,/^$/d' -e 's/^    //' >current &&
 	case "$3" in
@@ -226,8 +232,8 @@ test_commit_autosquash_multi_encoding () {
 		git rev-list HEAD >actual &&
 		test_line_count = 3 actual &&
 		iconv -f $old -t UTF-8 "$TEST_DIRECTORY"/t3900/$msg >expect &&
-		git cat-file commit HEAD^ >raw &&
-		(sed "1,/^$/d" raw | iconv -f $new -t utf-8) >actual &&
+		commit_body HEAD^ >raw &&
+		iconv -f $new -t utf-8 <raw >actual &&
 		test_cmp expect actual
 	'
 }

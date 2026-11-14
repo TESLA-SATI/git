@@ -5,7 +5,6 @@ test_description='git rebase --onto A...B'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY/lib-rebase.sh"
 
@@ -108,7 +107,7 @@ test_expect_success 'rebase --onto main...side requires a single merge-base' '
 	git reset --hard K &&
 
 	test_must_fail git rebase -i --onto main...side J 2>err &&
-	grep "need exactly one merge base" err
+	test_grep "need exactly one merge base" err
 '
 
 test_expect_success 'rebase --keep-base --onto incompatible' '
@@ -197,7 +196,7 @@ test_expect_success 'rebase --keep-base requires a single merge base' '
 	git reset --hard K &&
 
 	test_must_fail git rebase -i --keep-base main 2>err &&
-	grep "need exactly one merge base with branch" err
+	test_grep "need exactly one merge base with branch" err
 '
 
 test_expect_success 'rebase --keep-base keeps cherry picks' '

@@ -1,9 +1,11 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "test-tool.h"
 #include "hex.h"
 #include "refs.h"
 #include "setup.h"
 #include "worktree.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "path.h"
 #include "repository.h"
 #include "strbuf.h"
@@ -22,14 +24,13 @@ struct flag_definition {
 static unsigned int parse_flags(const char *str, struct flag_definition *defs)
 {
 	struct string_list masks = STRING_LIST_INIT_DUP;
-	int i = 0;
 	unsigned int result = 0;
 
 	if (!strcmp(str, "0"))
 		return 0;
 
-	string_list_split(&masks, str, ',', 64);
-	for (; i < masks.nr; i++) {
+	string_list_split(&masks, str, ",", 64);
+	for (size_t i = 0; i < masks.nr; i++) {
 		const char *name = masks.items[i].string;
 		struct flag_definition *def = defs;
 		int found = 0;
@@ -73,18 +74,9 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 	} else if (!strcmp(argv[0], "main")) {
 		*refs = get_main_ref_store(the_repository);
 	} else if (skip_prefix(argv[0], "submodule:", &gitdir)) {
-		struct strbuf sb = STRBUF_INIT;
-		int ret;
-
-		ret = strbuf_git_path_submodule(&sb, gitdir, "objects/");
-		if (ret)
-			die("strbuf_git_path_submodule failed: %d", ret);
-		add_to_alternates_memory(sb.buf);
-		strbuf_release(&sb);
-
-		*refs = get_submodule_ref_store(gitdir);
+		*refs = repo_get_submodule_ref_store(the_repository, gitdir);
 	} else if (skip_prefix(argv[0], "worktree:", &gitdir)) {
-		struct worktree **p, **worktrees = get_worktrees();
+		struct worktree **p, **worktrees = get_worktrees(the_repository);
 
 		for (p = worktrees; *p; p++) {
 			struct worktree *wt = *p;
@@ -112,32 +104,13 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 	return argv + 1;
 }
 
-static struct flag_definition pack_flags[] = { FLAG_DEF(PACK_REFS_PRUNE),
-					       FLAG_DEF(PACK_REFS_ALL),
-					       { NULL, 0 } };
-
-static int cmd_pack_refs(struct ref_store *refs, const char **argv)
-{
-	unsigned int flags = arg_flags(*argv++, "flags", pack_flags);
-	static struct ref_exclusions exclusions = REF_EXCLUSIONS_INIT;
-	static struct string_list included_refs = STRING_LIST_INIT_NODUP;
-	struct pack_refs_opts pack_opts = { .flags = flags,
-					    .exclusions = &exclusions,
-					    .includes = &included_refs };
-
-	if (pack_opts.flags & PACK_REFS_ALL)
-		string_list_append(pack_opts.includes, "*");
-
-	return refs_pack_refs(refs, &pack_opts);
-}
-
 static int cmd_create_symref(struct ref_store *refs, const char **argv)
 {
 	const char *refname = notnull(*argv++, "refname");
 	const char *target = notnull(*argv++, "target");
 	const char *logmsg = *argv++;
 
-	return refs_create_symref(refs, refname, target, logmsg);
+	return refs_update_symref(refs, refname, target, logmsg);
 }
 
 static struct flag_definition transaction_flags[] = {
@@ -145,6 +118,7 @@ static struct flag_definition transaction_flags[] = {
 	FLAG_DEF(REF_FORCE_CREATE_REFLOG),
 	FLAG_DEF(REF_SKIP_OID_VERIFICATION),
 	FLAG_DEF(REF_SKIP_REFNAME_VERIFICATION),
+	FLAG_DEF(REF_SKIP_CREATE_REFLOG),
 	{ NULL, 0 }
 };
 
@@ -172,32 +146,36 @@ static int cmd_rename_ref(struct ref_store *refs, const char **argv)
 	return refs_rename_ref(refs, oldref, newref, logmsg);
 }
 
-static int each_ref(const char *refname, const struct object_id *oid,
-		    int flags, void *cb_data UNUSED)
+static int each_ref(const struct reference *ref, void *cb_data UNUSED)
 {
-	printf("%s %s 0x%x\n", oid_to_hex(oid), refname, flags);
+	printf("%s %s 0x%x\n", oid_to_hex(ref->oid), ref->name, ref->flags);
 	return 0;
 }
 
 static int cmd_for_each_ref(struct ref_store *refs, const char **argv)
 {
 	const char *prefix = notnull(*argv++, "prefix");
-
-	return refs_for_each_ref_in(refs, prefix, each_ref, NULL);
+	struct refs_for_each_ref_options opts = {
+		.prefix = prefix,
+		.trim_prefix = strlen(prefix),
+	};
+	return refs_for_each_ref_ext(refs, each_ref, NULL, &opts);
 }
 
 static int cmd_for_each_ref__exclude(struct ref_store *refs, const char **argv)
 {
 	const char *prefix = notnull(*argv++, "prefix");
-	const char **exclude_patterns = argv;
+	struct refs_for_each_ref_options opts = {
+		.prefix = prefix,
+		.exclude_patterns = argv,
+	};
 
-	return refs_for_each_fullref_in(refs, prefix, exclude_patterns, each_ref,
-					NULL);
+	return refs_for_each_ref_ext(refs, each_ref, NULL, &opts);
 }
 
 static int cmd_resolve_ref(struct ref_store *refs, const char **argv)
 {
-	struct object_id oid = *null_oid();
+	struct object_id oid = *null_oid(the_hash_algo);
 	const char *refname = notnull(*argv++, "refname");
 	int resolve_flags = arg_flags(*argv++, "resolve-flags", empty_flags);
 	int flags;
@@ -215,7 +193,7 @@ static int cmd_verify_ref(struct ref_store *refs, const char **argv)
 	struct strbuf err = STRBUF_INIT;
 	int ret;
 
-	ret = refs_verify_refname_available(refs, refname, NULL, NULL, &err);
+	ret = refs_verify_refname_available(refs, refname, NULL, NULL, 0, &err);
 	if (err.len)
 		puts(err.buf);
 	return ret;
@@ -233,7 +211,8 @@ static int cmd_for_each_reflog(struct ref_store *refs,
 	return refs_for_each_reflog(refs, each_reflog, NULL);
 }
 
-static int each_reflog_ent(struct object_id *old_oid, struct object_id *new_oid,
+static int each_reflog_ent(const char *refname UNUSED,
+			   struct object_id *old_oid, struct object_id *new_oid,
 			   const char *committer, timestamp_t timestamp,
 			   int tz, const char *msg, void *cb_data UNUSED)
 {
@@ -326,7 +305,6 @@ struct command {
 };
 
 static struct command commands[] = {
-	{ "pack-refs", cmd_pack_refs },
 	{ "create-symref", cmd_create_symref },
 	{ "delete-refs", cmd_delete_refs },
 	{ "rename-ref", cmd_rename_ref },
@@ -354,7 +332,7 @@ int cmd__ref_store(int argc UNUSED, const char **argv)
 	const char *func;
 	struct command *cmd;
 
-	setup_git_directory();
+	setup_git_directory(the_repository);
 
 	argv = get_store(argv + 1, &refs);
 

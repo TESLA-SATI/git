@@ -1,7 +1,7 @@
 #ifndef DIR_H
 #define DIR_H
 
-#include "hash-ll.h"
+#include "hash.h"
 #include "hashmap.h"
 #include "pathspec.h"
 #include "statinfo.h"
@@ -43,7 +43,6 @@ struct repository;
  *
  */
 
-struct repository;
 
 struct dir_entry {
 	unsigned int len;
@@ -62,7 +61,6 @@ struct path_pattern {
 	 */
 	struct pattern_list *pl;
 
-	const char *pattern;
 	int patternlen;
 	int nowildcardlen;
 	const char *base;
@@ -74,6 +72,8 @@ struct path_pattern {
 	 * and from -1 decrementing for patterns from CLI args.
 	 */
 	int srcpos;
+
+	char pattern[FLEX_ARRAY];
 };
 
 /* used for hashmaps for cone patterns */
@@ -93,9 +93,6 @@ struct pattern_entry {
 struct pattern_list {
 	int nr;
 	int alloc;
-
-	/* remember pointer to exclude file contents so we can free() */
-	char *filebuf;
 
 	/* origin of list, e.g. path to filename, or descriptive string */
 	const char *src;
@@ -156,7 +153,7 @@ struct oid_stat {
  *   - The list of files and directories of the directory in question
  *   - The $GIT_DIR/index
  *   - dir_struct flags
- *   - The content of $GIT_DIR/info/exclude
+ *   - The content of $GIT_COMMON_DIR/info/exclude
  *   - The content of core.excludesfile
  *   - The content (or the lack) of .gitignore of all parent directories
  *     from $GIT_WORK_TREE
@@ -469,6 +466,9 @@ void add_patterns_from_file(struct dir_struct *, const char *fname);
 int add_patterns_from_blob_to_list(struct object_id *oid,
 				   const char *base, int baselen,
 				   struct pattern_list *pl);
+int add_patterns_from_buffer(char *buf, size_t size,
+			     const char *base, int baselen,
+			     struct pattern_list *pl);
 void parse_path_pattern(const char **string, int *patternlen, unsigned *flags, int *nowildcardlen);
 void add_pattern(const char *string, const char *base,
 		 int baselen, struct pattern_list *pl, int srcpos);
@@ -537,16 +537,37 @@ int get_sparse_checkout_patterns(struct pattern_list *pl);
 int remove_dir_recursively(struct strbuf *path, int flag);
 
 /*
+ * This function pointer type is called on each file discovered in
+ * for_each_file_in_dir. The iteration stops if this method returns
+ * non-zero.
+ */
+typedef int (*file_iterator)(const char *path, const void *data);
+
+struct strbuf;
+/*
+ * Given a directory path, recursively visit each file within, including
+ * within subdirectories.
+ */
+int for_each_file_in_dir(struct strbuf *path, file_iterator fn, const void *data);
+
+/*
  * Tries to remove the path, along with leading empty directories so long as
  * those empty directories are not startup_info->original_cwd.  Ignores
  * ENOENT.
  */
 int remove_path(const char *path);
 
-int fspathcmp(const char *a, const char *b);
+int git_fspathcmp(const char *a, const char *b);
 int fspatheq(const char *a, const char *b);
-int fspathncmp(const char *a, const char *b, size_t count);
+int git_fspathncmp(const char *a, const char *b, size_t count);
 unsigned int fspathhash(const char *str);
+
+/*
+ * Reports whether paths collide. This may be because the paths differ only in
+ * case on a case-sensitive filesystem, or that one path refers to a symlink
+ * that collides with one of the parent directories of the other.
+ */
+int paths_collide(const char *a, const char *b);
 
 /*
  * The prefix part of pattern must not contains wildcards.
@@ -669,4 +690,27 @@ static inline int starts_with_dot_dot_slash_native(const char *const path)
 	return path_match_flags(path, what | PATH_MATCH_NATIVE);
 }
 
+/**
+ * starts_with_dot_slash: convenience wrapper for
+ * patch_match_flags() with PATH_MATCH_STARTS_WITH_DOT_SLASH and
+ * PATH_MATCH_XPLATFORM.
+ */
+static inline int starts_with_dot_slash(const char *const path)
+{
+	const enum path_match_flags what = PATH_MATCH_STARTS_WITH_DOT_SLASH;
+
+	return path_match_flags(path, what | PATH_MATCH_XPLATFORM);
+}
+
+/**
+ * starts_with_dot_dot_slash: convenience wrapper for
+ * patch_match_flags() with PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH and
+ * PATH_MATCH_XPLATFORM.
+ */
+static inline int starts_with_dot_dot_slash(const char *const path)
+{
+	const enum path_match_flags what = PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH;
+
+	return path_match_flags(path, what | PATH_MATCH_XPLATFORM);
+}
 #endif

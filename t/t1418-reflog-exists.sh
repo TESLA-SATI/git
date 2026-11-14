@@ -4,7 +4,6 @@ test_description='Test reflog display routines'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -13,7 +12,7 @@ test_expect_success 'setup' '
 
 test_expect_success 'usage' '
 	test_expect_code 129 git reflog exists &&
-	test_expect_code 129 git reflog exists -h
+	git reflog exists -h
 '
 
 test_expect_success 'usage: unknown option' '

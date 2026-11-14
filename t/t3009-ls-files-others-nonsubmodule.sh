@@ -18,7 +18,6 @@ This test runs git ls-files --others with the following working tree:
       git repository with a commit and an untracked file
 '
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup: directories' '
@@ -37,6 +36,7 @@ test_expect_success 'setup: directories' '
 
 test_expect_success 'ls-files --others handles untracked git repositories' '
 	git ls-files -o >output &&
+	test_filter_gitconfig output &&
 	cat >expect <<-EOF &&
 	nonrepo-untracked-file/untracked
 	output

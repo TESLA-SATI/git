@@ -142,7 +142,7 @@ fi
 ## Configure body starts here.
 
 AC_PREREQ(2.59)
-AC_INIT([git], [@@GIT_VERSION@@], [git@vger.kernel.org])
+AC_INIT([git], [@GIT_VERSION@], [git@vger.kernel.org])
 
 AC_CONFIG_SRCDIR([git.c])
 
@@ -350,12 +350,6 @@ AS_HELP_STRING([],
 GIT_PARSE_WITH(iconv))
 
 ## --enable-FEATURE[=ARG] and --disable-FEATURE
-#
-# Define USE_NSEC below if you want git to care about sub-second file mtimes
-# and ctimes. Note that you need recent glibc (at least 2.2.4) for this, and
-# it will BREAK YOUR LOCAL DIFFS! show-diff and anything using it will likely
-# randomly break unless your underlying filesystem supports those sub-second
-# times (my ext3 doesn't).
 #
 # Define USE_STDEV below if you want git to care about the underlying device
 # change being considered an inode change from the update-index perspective.
@@ -1066,6 +1060,7 @@ AC_CHECK_LIB([iconv], [locale_charset],
        [AC_CHECK_LIB([charset], [locale_charset],
                      [CHARSET_LIB=-lcharset])])
 GIT_CONF_SUBST([CHARSET_LIB])
+
 #
 # Define HAVE_CLOCK_GETTIME=YesPlease if clock_gettime is available.
 GIT_CHECK_FUNC(clock_gettime,
@@ -1120,14 +1115,6 @@ GIT_CHECK_FUNC(strlcpy,
 [NO_STRLCPY=],
 [NO_STRLCPY=YesPlease])
 GIT_CONF_SUBST([NO_STRLCPY])
-#
-# Define NO_UINTMAX_T if your platform does not have uintmax_t
-AC_CHECK_TYPE(uintmax_t,
-[NO_UINTMAX_T=],
-[NO_UINTMAX_T=YesPlease],[
-#include <inttypes.h>
-])
-GIT_CONF_SUBST([NO_UINTMAX_T])
 #
 # Define NO_STRTOUMAX if you don't have strtoumax in the C library.
 GIT_CHECK_FUNC(strtoumax,
@@ -1193,6 +1180,41 @@ AC_COMPILE_IFELSE([BSD_SYSCTL_SRC],
 	[AC_MSG_RESULT([no])
 	HAVE_BSD_SYSCTL=])
 GIT_CONF_SUBST([HAVE_BSD_SYSCTL])
+
+#
+# Define HAVE_SYSINFO=YesPlease if sysinfo is available.
+#
+
+HAVE_SYSINFO=
+# on a *BSD system, sysctl() takes precedence over the
+# sysinfo() compatibility library (if installed).
+
+if test -z "$HAVE_BSD_SYSCTL"; then
+
+  AC_DEFUN([HAVE_SYSINFO_SRC], [
+  AC_LANG_PROGRAM([[
+  #include <stdint.h>
+  #include <sys/sysinfo.h>
+  ]], [[
+  struct sysinfo si;
+  uint64_t t = 0;
+  if (!sysinfo(&si)) {
+	t = si.totalram;
+	if (si.mem_unit > 1)
+		t *= (uint64_t)si.mem_unit;
+  }
+  return t;
+  ]])])
+
+  AC_MSG_CHECKING([for sysinfo])
+  AC_COMPILE_IFELSE([HAVE_SYSINFO_SRC],
+	[AC_MSG_RESULT([yes])
+	HAVE_SYSINFO=YesPlease],
+	[AC_MSG_RESULT([no])
+	HAVE_SYSINFO=])
+  GIT_CONF_SUBST([HAVE_SYSINFO])
+
+fi
 
 ## Other checks.
 # Define NO_SYMLINK_HEAD if you never want .git/HEAD to be a symbolic link.

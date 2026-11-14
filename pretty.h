@@ -3,6 +3,7 @@
 
 #include "date.h"
 #include "string-list.h"
+#include "color.h"
 
 struct commit;
 struct repository;
@@ -46,7 +47,7 @@ struct pretty_print_context {
 	struct rev_info *rev;
 	const char *output_encoding;
 	struct string_list *mailmap;
-	int color;
+	enum git_colorbool color;
 	struct ident_split *from_ident;
 	unsigned encode_email_headers:1;
 	struct pretty_print_describe_status *describe_status;
@@ -167,7 +168,7 @@ int format_set_trailers_options(struct process_trailer_options *opts,
  * a well-known sentinel date if they appear bogus.
  */
 const char *show_ident_date(const struct ident_split *id,
-			    const struct date_mode *mode);
+			    struct date_mode mode);
 
 
 #endif /* PRETTY_H */

@@ -2,7 +2,6 @@
 
 test_description='for-each-ref errors for broken refs'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 ZEROS=$ZERO_OID
@@ -51,6 +50,28 @@ test_expect_success 'Missing objects are reported correctly' '
 	git for-each-ref --format="%(objectname) %(refname)" >brief-out 2>brief-err &&
 	test_cmp missing-brief-expected brief-out &&
 	test_must_be_empty brief-err
+'
+
+test_expect_success 'missing ancestors are reported by contains filters' '
+	test_when_finished "git update-ref -d refs/heads/missing-parent" &&
+	{
+		echo "tree $(git rev-parse HEAD^{tree})" &&
+		echo "parent $MISSING" &&
+		git cat-file commit HEAD |
+			sed -n -e "/^author /p" -e "/^committer /p" &&
+		echo &&
+		echo "missing parent"
+	} >commit &&
+	broken=$(git hash-object -t commit -w commit) &&
+	git update-ref refs/heads/missing-parent "$broken" &&
+	for option in --contains --no-contains
+	do
+		test_must_fail git for-each-ref "$option=HEAD" \
+			refs/heads/missing-parent >out 2>err &&
+		test_must_be_empty out &&
+		test_grep "parse commit $MISSING" err ||
+		return 1
+	done
 '
 
 test_expect_success 'ahead-behind requires an argument' '

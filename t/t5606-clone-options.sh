@@ -4,7 +4,6 @@ test_description='basic clone options'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -64,7 +63,7 @@ test_expect_success 'disallows --bundle-uri with shallow options' '
 	for option in --depth=1 --shallow-since=01-01-2000 --shallow-exclude=HEAD
 	do
 		test_must_fail git clone --bundle-uri=bundle $option from to 2>err &&
-		grep "bundle-uri.* cannot be used together" err || return 1
+		test_grep "bundle-uri.* cannot be used together" err || return 1
 	done
 '
 
@@ -148,7 +147,7 @@ test_expect_success 'prefers --origin over -c config' '
 test_expect_success 'redirected clone does not show progress' '
 
 	git clone "file://$(pwd)/parent" clone-redirected >out 2>err &&
-	! grep % err &&
+	test_grep ! % err &&
 	test_grep ! "Checking connectivity" err
 
 '
@@ -157,7 +156,7 @@ test_expect_success 'redirected clone -v does show progress' '
 
 	git clone --progress "file://$(pwd)/parent" clone-redirected-progress \
 		>out 2>err &&
-	grep % err
+	test_grep % err
 
 '
 

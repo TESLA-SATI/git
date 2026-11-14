@@ -35,7 +35,7 @@ void reset_ident_date(void);
  * Signals an success with 0, but time part of the result may be NULL
  * if the input lacks timestamp and zone
  */
-int split_ident_line(struct ident_split *, const char *, int);
+int split_ident_line(struct ident_split *, const char *, size_t);
 
 /*
  * Given a commit or tag object buffer and the commit or tag headers, replaces
@@ -60,7 +60,6 @@ const char *fmt_ident(const char *name, const char *email,
 const char *fmt_name(enum want_ident);
 
 int committer_ident_sufficiently_given(void);
-int author_ident_sufficiently_given(void);
 
 struct config_context;
 int git_ident_config(const char *, const char *, const struct config_context *,

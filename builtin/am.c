@@ -3,7 +3,9 @@
  *
  * Based on git-am.sh by Junio C Hamano.
  */
-#define USE_THE_INDEX_VARIABLE
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "builtin.h"
 #include "abspath.h"
 #include "advice.h"
@@ -29,7 +31,7 @@
 #include "preload-index.h"
 #include "sequencer.h"
 #include "revision.h"
-#include "merge-recursive.h"
+#include "merge-ort-wrappers.h"
 #include "log-tree.h"
 #include "notes-utils.h"
 #include "rerere.h"
@@ -38,7 +40,6 @@
 #include "string-list.h"
 #include "pager.h"
 #include "path.h"
-#include "repository.h"
 #include "pretty.h"
 
 /**
@@ -157,22 +158,22 @@ static void am_state_init(struct am_state *state)
 
 	memset(state, 0, sizeof(*state));
 
-	state->dir = git_pathdup("rebase-apply");
+	state->dir = repo_git_path(the_repository, "rebase-apply");
 
 	state->prec = 4;
 
-	git_config_get_bool("am.threeway", &state->threeway);
+	repo_config_get_bool(the_repository, "am.threeway", &state->threeway);
 
 	state->utf8 = 1;
 
-	git_config_get_bool("am.messageid", &state->message_id);
+	repo_config_get_bool(the_repository, "am.messageid", &state->message_id);
 
 	state->scissors = SCISSORS_UNSET;
 	state->quoted_cr = quoted_cr_unset;
 
 	strvec_init(&state->git_apply_opts);
 
-	if (!git_config_get_bool("commit.gpgsign", &gpgsign))
+	if (!repo_config_get_bool(the_repository, "commit.gpgsign", &gpgsign))
 		state->sign_commit = gpgsign ? "" : NULL;
 }
 
@@ -408,7 +409,7 @@ static void am_load(struct am_state *state)
 	read_commit_msg(state);
 
 	if (read_state_file(&sb, state, "original-commit", 1) < 0)
-		oidclr(&state->orig_commit);
+		oidclr(&state->orig_commit, the_repository->hash_algo);
 	else if (get_oid_hex(sb.buf, &state->orig_commit) < 0)
 		die(_("could not parse %s"), am_path(state, "original-commit"));
 
@@ -489,8 +490,11 @@ static int run_applypatch_msg_hook(struct am_state *state)
 
 	assert(state->msg);
 
-	if (!state->no_verify)
-		ret = run_hooks_l("applypatch-msg", am_path(state, "final-commit"), NULL);
+	if (!state->no_verify) {
+		struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_FORCE_SERIAL;
+		strvec_push(&opt.args, am_path(state, "final-commit"));
+		ret = run_hooks_opt(the_repository, "applypatch-msg", &opt);
+	}
 
 	if (!ret) {
 		FREE_AND_NULL(state->msg);
@@ -512,7 +516,7 @@ static int run_post_rewrite_hook(const struct am_state *state)
 	strvec_push(&opt.args, "rebase");
 	opt.path_to_stdin = am_path(state, "rewritten");
 
-	return run_hooks_opt("post-rewrite", &opt);
+	return run_hooks_opt(the_repository, "post-rewrite", &opt);
 }
 
 /**
@@ -848,8 +852,10 @@ static int split_mail_stgit_series(struct am_state *state, const char **paths,
 	series_dir = dirname(series_dir_buf);
 
 	fp = fopen(*paths, "r");
-	if (!fp)
+	if (!fp) {
+		free(series_dir_buf);
 		return error_errno(_("could not open '%s' for reading"), *paths);
+	}
 
 	while (!strbuf_getline_lf(&sb, fp)) {
 		if (*sb.buf == '#')
@@ -961,7 +967,7 @@ static int split_mail(struct am_state *state, enum patch_format patch_format,
 {
 	if (keep_cr < 0) {
 		keep_cr = 0;
-		git_config_get_bool("am.keepcr", &keep_cr);
+		repo_config_get_bool(the_repository, "am.keepcr", &keep_cr);
 	}
 
 	switch (patch_format) {
@@ -996,12 +1002,13 @@ static void am_setup(struct am_state *state, enum patch_format patch_format,
 
 	if (!patch_format) {
 		fprintf_ln(stderr, _("Patch format detection failed."));
-		exit(128);
+		die(NULL);
 	}
 
 	if (mkdir(state->dir, 0777) < 0 && errno != EEXIST)
 		die_errno(_("failed to create directory '%s'"), state->dir);
-	delete_ref(NULL, "REBASE_HEAD", NULL, REF_NO_DEREF);
+	refs_delete_ref(get_main_ref_store(the_repository), NULL,
+			"REBASE_HEAD", NULL, REF_NO_DEREF);
 
 	if (split_mail(state, patch_format, paths, keep_cr) < 0) {
 		am_destroy(state);
@@ -1081,12 +1088,15 @@ static void am_setup(struct am_state *state, enum patch_format patch_format,
 	if (!repo_get_oid(the_repository, "HEAD", &curr_head)) {
 		write_state_text(state, "abort-safety", oid_to_hex(&curr_head));
 		if (!state->rebasing)
-			update_ref("am", "ORIG_HEAD", &curr_head, NULL, 0,
-				   UPDATE_REFS_DIE_ON_ERR);
+			refs_update_ref(get_main_ref_store(the_repository),
+					"am", "ORIG_HEAD", &curr_head, NULL,
+					0,
+					UPDATE_REFS_DIE_ON_ERR);
 	} else {
 		write_state_text(state, "abort-safety", "");
 		if (!state->rebasing)
-			delete_ref(NULL, "ORIG_HEAD", NULL, 0);
+			refs_delete_ref(get_main_ref_store(the_repository),
+					NULL, "ORIG_HEAD", NULL, 0);
 	}
 
 	/*
@@ -1117,9 +1127,10 @@ static void am_next(struct am_state *state)
 	unlink(am_path(state, "author-script"));
 	unlink(am_path(state, "final-commit"));
 
-	oidclr(&state->orig_commit);
+	oidclr(&state->orig_commit, the_repository->hash_algo);
 	unlink(am_path(state, "original-commit"));
-	delete_ref(NULL, "REBASE_HEAD", NULL, REF_NO_DEREF);
+	refs_delete_ref(get_main_ref_store(the_repository), NULL,
+			"REBASE_HEAD", NULL, REF_NO_DEREF);
 
 	if (!repo_get_oid(the_repository, "HEAD", &head))
 		write_state_text(state, "abort-safety", oid_to_hex(&head));
@@ -1169,7 +1180,7 @@ static void NORETURN die_user_resolve(const struct am_state *state)
 		strbuf_release(&sb);
 	}
 
-	exit(128);
+	die(NULL);
 }
 
 /**
@@ -1179,7 +1190,7 @@ static void am_append_signoff(struct am_state *state)
 {
 	struct strbuf sb = STRBUF_INIT;
 
-	strbuf_attach(&sb, state->msg, state->msg_len, state->msg_len);
+	strbuf_attach(&sb, state->msg, state->msg_len, state->msg_len + 1);
 	append_signoff(&sb, 0, 0);
 	state->msg = strbuf_detach(&sb, &state->msg_len);
 }
@@ -1204,7 +1215,7 @@ static int parse_mail(struct am_state *state, const char *mail)
 	int ret = 0;
 	struct mailinfo mi;
 
-	setup_mailinfo(&mi);
+	setup_mailinfo(the_repository, &mi);
 
 	if (state->utf8)
 		mi.metainfo_charset = get_commit_output_encoding();
@@ -1399,7 +1410,7 @@ static void write_commit_patch(const struct am_state *state, struct commit *comm
 	rev_info.no_commit_id = 1;
 	rev_info.diffopt.flags.binary = 1;
 	rev_info.diffopt.flags.full_index = 1;
-	rev_info.diffopt.use_color = 0;
+	rev_info.diffopt.use_color = GIT_COLOR_NEVER;
 	rev_info.diffopt.file = fp;
 	rev_info.diffopt.close_file = 1;
 	add_pending_object(&rev_info, &commit->object, "");
@@ -1432,7 +1443,7 @@ static void write_index_patch(const struct am_state *state)
 	rev_info.disable_stdin = 1;
 	rev_info.no_commit_id = 1;
 	rev_info.diffopt.output_format = DIFF_FORMAT_PATCH;
-	rev_info.diffopt.use_color = 0;
+	rev_info.diffopt.use_color = GIT_COLOR_NEVER;
 	rev_info.diffopt.file = fp;
 	rev_info.diffopt.close_file = 1;
 	add_pending_object(&rev_info, &tree->object, "");
@@ -1466,8 +1477,9 @@ static int parse_mail_rebase(struct am_state *state, const char *mail)
 
 	oidcpy(&state->orig_commit, &commit_oid);
 	write_state_text(state, "original-commit", oid_to_hex(&commit_oid));
-	update_ref("am", "REBASE_HEAD", &commit_oid,
-		   NULL, REF_NO_DEREF, UPDATE_REFS_DIE_ON_ERR);
+	refs_update_ref(get_main_ref_store(the_repository), "am",
+			"REBASE_HEAD", &commit_oid,
+			NULL, REF_NO_DEREF, UPDATE_REFS_DIE_ON_ERR);
 
 	return 0;
 }
@@ -1536,8 +1548,9 @@ static int run_apply(const struct am_state *state, const char *index_file)
 
 	if (index_file) {
 		/* Reload index as apply_all_patches() will have modified it. */
-		discard_index(&the_index);
-		read_index_from(&the_index, index_file, get_git_dir());
+		discard_index(the_repository->index);
+		read_index_from(the_repository->index, index_file,
+				repo_get_git_dir(the_repository));
 	}
 
 	return 0;
@@ -1567,8 +1580,8 @@ static int build_fake_ancestor(const struct am_state *state, const char *index_f
  */
 static int fall_back_threeway(const struct am_state *state, const char *index_path)
 {
-	struct object_id orig_tree, their_tree, our_tree;
-	const struct object_id *bases[1] = { &orig_tree };
+	struct object_id their_tree, our_tree;
+	struct object_id bases[1] = { 0 };
 	struct merge_options o;
 	struct commit *result;
 	char *their_tree_name;
@@ -1579,10 +1592,10 @@ static int fall_back_threeway(const struct am_state *state, const char *index_pa
 	if (build_fake_ancestor(state, index_path))
 		return error("could not build fake ancestor");
 
-	discard_index(&the_index);
-	read_index_from(&the_index, index_path, get_git_dir());
+	discard_index(the_repository->index);
+	read_index_from(the_repository->index, index_path, repo_get_git_dir(the_repository));
 
-	if (write_index_as_tree(&orig_tree, &the_index, index_path, 0, NULL))
+	if (write_index_as_tree(&bases[0], the_repository->index, index_path, 0, NULL))
 		return error(_("Repository lacks necessary blobs to fall back on 3-way merge."));
 
 	say(state, stdout, _("Using index info to reconstruct a base tree..."));
@@ -1608,12 +1621,12 @@ static int fall_back_threeway(const struct am_state *state, const char *index_pa
 		return error(_("Did you hand edit your patch?\n"
 				"It does not apply to blobs recorded in its index."));
 
-	if (write_index_as_tree(&their_tree, &the_index, index_path, 0, NULL))
+	if (write_index_as_tree(&their_tree, the_repository->index, index_path, 0, NULL))
 		return error("could not write tree");
 
 	say(state, stdout, _("Falling back to patching base and 3-way merge..."));
 
-	discard_index(&the_index);
+	discard_index(the_repository->index);
 	repo_read_index(the_repository);
 
 	/*
@@ -1624,17 +1637,18 @@ static int fall_back_threeway(const struct am_state *state, const char *index_pa
 	 * changes.
 	 */
 
-	init_merge_options(&o, the_repository);
+	init_ui_merge_options(&o, the_repository);
 
 	o.branch1 = "HEAD";
 	their_tree_name = xstrfmt("%.*s", linelen(state->msg), state->msg);
 	o.branch2 = their_tree_name;
+	o.ancestor = "constructed fake ancestor";
 	o.detect_directory_renames = MERGE_DIRECTORY_RENAMES_NONE;
 
 	if (state->quiet)
 		o.verbosity = 0;
 
-	if (merge_recursive_generic(&o, &our_tree, &their_tree, 1, bases, &result)) {
+	if (merge_ort_generic(&o, &our_tree, &their_tree, 1, bases, &result)) {
 		repo_rerere(the_repository, state->allow_rerere_autoupdate);
 		free(their_tree_name);
 		return error(_("Failed to merge in the changes."));
@@ -1657,10 +1671,12 @@ static void do_commit(const struct am_state *state)
 	const char *reflog_msg, *author, *committer = NULL;
 	struct strbuf sb = STRBUF_INIT;
 
-	if (!state->no_verify && run_hooks("pre-applypatch"))
+	if (!state->no_verify && run_hooks(the_repository, "pre-applypatch"))
 		exit(1);
 
-	if (write_index_as_tree(&tree, &the_index, get_index_file(), 0, NULL))
+	if (write_index_as_tree(&tree, the_repository->index,
+				repo_get_index_file(the_repository),
+				0, NULL))
 		die(_("git write-tree failed to write a tree"));
 
 	if (!repo_get_oid_commit(the_repository, "HEAD", &parent)) {
@@ -1697,8 +1713,9 @@ static void do_commit(const struct am_state *state)
 	strbuf_addf(&sb, "%s: %.*s", reflog_msg, linelen(state->msg),
 			state->msg);
 
-	update_ref(sb.buf, "HEAD", &commit, old_oid, 0,
-		   UPDATE_REFS_DIE_ON_ERR);
+	refs_update_ref(get_main_ref_store(the_repository), sb.buf, "HEAD",
+			&commit, old_oid, 0,
+			UPDATE_REFS_DIE_ON_ERR);
 
 	if (state->rebasing) {
 		FILE *fp = xfopen(am_path(state, "rewritten"), "a");
@@ -1709,8 +1726,9 @@ static void do_commit(const struct am_state *state)
 		fclose(fp);
 	}
 
-	run_hooks("post-applypatch");
+	run_hooks(the_repository, "post-applypatch");
 
+	commit_list_free(parents);
 	strbuf_release(&sb);
 }
 
@@ -1773,7 +1791,7 @@ static int do_interactive(struct am_state *state)
 			}
 			strbuf_release(&msg);
 		} else if (*reply == 'v' || *reply == 'V') {
-			const char *pager = git_pager(1);
+			const char *pager = git_pager(the_repository, 1);
 			struct child_process cp = CHILD_PROCESS_INIT;
 
 			if (!pager)
@@ -1921,7 +1939,7 @@ next:
 	 */
 	if (!state->rebasing) {
 		am_destroy(state);
-		run_auto_maintenance(state->quiet);
+		run_auto_maintenance(the_repository, state->quiet);
 	}
 }
 
@@ -1948,7 +1966,7 @@ static void am_resolve(struct am_state *state, int allow_empty)
 		}
 	}
 
-	if (unmerged_index(&the_index)) {
+	if (unmerged_index(the_repository->index)) {
 		printf_ln(_("You still have unmerged paths in your index.\n"
 			"You should 'git add' each file with resolved conflicts to mark them as such.\n"
 			"You might run `git rm` on a file to accept \"deleted by them\" for it."));
@@ -1982,17 +2000,17 @@ static int fast_forward_to(struct tree *head, struct tree *remote, int reset)
 	struct unpack_trees_options opts;
 	struct tree_desc t[2];
 
-	if (parse_tree(head) || parse_tree(remote))
+	if (repo_parse_tree(the_repository, head) || repo_parse_tree(the_repository, remote))
 		return -1;
 
 	repo_hold_locked_index(the_repository, &lock_file, LOCK_DIE_ON_ERROR);
 
-	refresh_index(&the_index, REFRESH_QUIET, NULL, NULL, NULL);
+	refresh_index(the_repository->index, REFRESH_QUIET, NULL, NULL, NULL);
 
 	memset(&opts, 0, sizeof(opts));
 	opts.head_idx = 1;
-	opts.src_index = &the_index;
-	opts.dst_index = &the_index;
+	opts.src_index = the_repository->index;
+	opts.dst_index = the_repository->index;
 	opts.update = 1;
 	opts.merge = 1;
 	opts.reset = reset ? UNPACK_RESET_PROTECT_UNTRACKED : 0;
@@ -2006,7 +2024,7 @@ static int fast_forward_to(struct tree *head, struct tree *remote, int reset)
 		return -1;
 	}
 
-	if (write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
+	if (write_locked_index(the_repository->index, &lock_file, COMMIT_LOCK))
 		die(_("unable to write new index file"));
 
 	return 0;
@@ -2022,15 +2040,15 @@ static int merge_tree(struct tree *tree)
 	struct unpack_trees_options opts;
 	struct tree_desc t[1];
 
-	if (parse_tree(tree))
+	if (repo_parse_tree(the_repository, tree))
 		return -1;
 
 	repo_hold_locked_index(the_repository, &lock_file, LOCK_DIE_ON_ERROR);
 
 	memset(&opts, 0, sizeof(opts));
 	opts.head_idx = 1;
-	opts.src_index = &the_index;
-	opts.dst_index = &the_index;
+	opts.src_index = the_repository->index;
+	opts.dst_index = the_repository->index;
 	opts.merge = 1;
 	opts.fn = oneway_merge;
 	init_tree_desc(&t[0], &tree->object.oid, tree->buffer, tree->size);
@@ -2040,7 +2058,7 @@ static int merge_tree(struct tree *tree)
 		return -1;
 	}
 
-	if (write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
+	if (write_locked_index(the_repository->index, &lock_file, COMMIT_LOCK))
 		die(_("unable to write new index file"));
 
 	return 0;
@@ -2055,11 +2073,11 @@ static int clean_index(const struct object_id *head, const struct object_id *rem
 	struct tree *head_tree, *remote_tree, *index_tree;
 	struct object_id index;
 
-	head_tree = parse_tree_indirect(head);
+	head_tree = repo_parse_tree_indirect(the_repository, head);
 	if (!head_tree)
 		return error(_("Could not parse object '%s'."), oid_to_hex(head));
 
-	remote_tree = parse_tree_indirect(remote);
+	remote_tree = repo_parse_tree_indirect(the_repository, remote);
 	if (!remote_tree)
 		return error(_("Could not parse object '%s'."), oid_to_hex(remote));
 
@@ -2068,10 +2086,12 @@ static int clean_index(const struct object_id *head, const struct object_id *rem
 	if (fast_forward_to(head_tree, head_tree, 1))
 		return -1;
 
-	if (write_index_as_tree(&index, &the_index, get_index_file(), 0, NULL))
+	if (write_index_as_tree(&index, the_repository->index,
+				repo_get_index_file(the_repository),
+				0, NULL))
 		return -1;
 
-	index_tree = parse_tree_indirect(&index);
+	index_tree = repo_parse_tree_indirect(the_repository, &index);
 	if (!index_tree)
 		return error(_("Could not parse object '%s'."), oid_to_hex(&index));
 
@@ -2144,11 +2164,11 @@ static int safe_to_abort(const struct am_state *state)
 		if (get_oid_hex(sb.buf, &abort_safety))
 			die(_("could not parse %s"), am_path(state, "abort-safety"));
 	} else
-		oidclr(&abort_safety);
+		oidclr(&abort_safety, the_repository->hash_algo);
 	strbuf_release(&sb);
 
 	if (repo_get_oid(the_repository, "HEAD", &head))
-		oidclr(&head);
+		oidclr(&head, the_repository->hash_algo);
 
 	if (oideq(&head, &abort_safety))
 		return 1;
@@ -2175,7 +2195,8 @@ static void am_abort(struct am_state *state)
 
 	am_rerere_clear();
 
-	curr_branch = resolve_refdup("HEAD", 0, &curr_head, NULL);
+	curr_branch = refs_resolve_refdup(get_main_ref_store(the_repository),
+					  "HEAD", 0, &curr_head, NULL);
 	has_curr_head = curr_branch && !is_null_oid(&curr_head);
 	if (!has_curr_head)
 		oidcpy(&curr_head, the_hash_algo->empty_tree);
@@ -2188,11 +2209,13 @@ static void am_abort(struct am_state *state)
 		die(_("failed to clean index"));
 
 	if (has_orig_head)
-		update_ref("am --abort", "HEAD", &orig_head,
-			   has_curr_head ? &curr_head : NULL, 0,
-			   UPDATE_REFS_DIE_ON_ERR);
+		refs_update_ref(get_main_ref_store(the_repository),
+				"am --abort", "HEAD", &orig_head,
+				has_curr_head ? &curr_head : NULL, 0,
+				UPDATE_REFS_DIE_ON_ERR);
 	else if (curr_branch)
-		delete_ref(NULL, curr_branch, NULL, REF_NO_DEREF);
+		refs_delete_ref(get_main_ref_store(the_repository), NULL,
+				curr_branch, NULL, REF_NO_DEREF);
 
 	free(curr_branch);
 	am_destroy(state);
@@ -2228,7 +2251,7 @@ static int show_patch(struct am_state *state, enum resume_type resume_mode)
 	if (len < 0)
 		die_errno(_("failed to read '%s'"), patch_path);
 
-	setup_pager();
+	setup_pager(the_repository);
 	write_in_full(1, sb.buf, sb.len);
 	strbuf_release(&sb);
 	return 0;
@@ -2286,7 +2309,10 @@ static int parse_opt_show_current_patch(const struct option *opt, const char *ar
 	return 0;
 }
 
-int cmd_am(int argc, const char **argv, const char *prefix)
+int cmd_am(int argc,
+	   const char **argv,
+	   const char *prefix,
+	   struct repository *repo UNUSED)
 {
 	struct am_state state;
 	int binary = -1;
@@ -2378,11 +2404,20 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 		OPT_CMDMODE(0, "quit", &resume_mode,
 			N_("abort the patching operation but keep HEAD where it is"),
 			RESUME_QUIT),
-		{ OPTION_CALLBACK, 0, "show-current-patch", &resume_mode,
-		  "(diff|raw)",
-		  N_("show the patch being applied"),
-		  PARSE_OPT_CMDMODE | PARSE_OPT_OPTARG | PARSE_OPT_NONEG | PARSE_OPT_LITERAL_ARGHELP,
-		  parse_opt_show_current_patch, RESUME_SHOW_PATCH_RAW },
+		{
+			.type = OPTION_CALLBACK,
+			.long_name = "show-current-patch",
+			.value = &resume_mode,
+			.precision = sizeof(resume_mode),
+			.argh = "(diff|raw)",
+			.help = N_("show the patch being applied"),
+			.flags = PARSE_OPT_CMDMODE | PARSE_OPT_OPTARG | PARSE_OPT_NONEG | PARSE_OPT_LITERAL_ARGHELP,
+			.callback = parse_opt_show_current_patch,
+			.defval = RESUME_SHOW_PATCH_RAW,
+		},
+		OPT_CMDMODE(0, "retry", &resume_mode,
+			N_("try to apply current patch again"),
+			RESUME_APPLY),
 		OPT_CMDMODE(0, "allow-empty", &resume_mode,
 			N_("record the empty patch as an empty commit"),
 			RESUME_ALLOW_EMPTY),
@@ -2392,9 +2427,16 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 		OPT_BOOL(0, "ignore-date", &state.ignore_date,
 			N_("use current timestamp for author date")),
 		OPT_RERERE_AUTOUPDATE(&state.allow_rerere_autoupdate),
-		{ OPTION_STRING, 'S', "gpg-sign", &state.sign_commit, N_("key-id"),
-		  N_("GPG-sign commits"),
-		  PARSE_OPT_OPTARG, NULL, (intptr_t) "" },
+		{
+			.type = OPTION_STRING,
+			.short_name = 'S',
+			.long_name = "gpg-sign",
+			.value = &state.sign_commit,
+			.argh = N_("key-id"),
+			.help = N_("GPG-sign commits"),
+			.flags = PARSE_OPT_OPTARG,
+			.defval = (intptr_t) "",
+		},
 		OPT_CALLBACK_F(0, "empty", &state.empty_type, "(stop|drop|keep)",
 		  N_("how to handle empty patches"),
 		  PARSE_OPT_NONEG, am_option_parse_empty),
@@ -2403,10 +2445,9 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 		OPT_END()
 	};
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage_with_options(usage, options);
+	show_usage_with_options_if_asked(argc, argv, usage, options);
 
-	git_config(git_default_config, NULL);
+	repo_config(the_repository, git_default_config, NULL);
 
 	am_state_init(&state);
 

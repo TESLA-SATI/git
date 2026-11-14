@@ -11,12 +11,18 @@ initialized previously but the checkout has since been removed.
 
 . ./test-lib.sh
 
-# Tested non-UTF-8 encoding
-test_encoding="ISO8859-1"
 
-# String "added" in German (translated with Google Translate), encoded in UTF-8,
-# used in sample commit log messages in add_file() function below.
-added=$(printf "hinzugef\303\274gt")
+# Test non-UTF-8 encoding in case iconv is available.
+if test_have_prereq ICONV
+then
+	test_encoding="ISO8859-1"
+	# String "added" in German (translated with Google Translate), encoded in UTF-8,
+	# used in sample commit log messages in add_file() function below.
+	added=$(printf "hinzugef\303\274gt")
+else
+	test_encoding="UTF-8"
+	added="added"
+fi
 
 add_file () {
 	(
@@ -29,8 +35,12 @@ add_file () {
 			test_tick &&
 			# "git commit -m" would break MinGW, as Windows refuse to pass
 			# $test_encoding encoded parameter to git.
-			echo "Add $name ($added $name)" | iconv -f utf-8 -t $test_encoding |
-			git -c "i18n.commitEncoding=$test_encoding" commit -F -
+			message="Add $name ($added $name)" &&
+			if test_have_prereq ICONV
+			then
+				message=$(echo "$message" | iconv -f utf-8 -t $test_encoding)
+			fi &&
+			echo "$message" | git -c "i18n.commitEncoding=$test_encoding" commit -F -
 		done >/dev/null &&
 		git rev-parse --short --verify HEAD
 	)

@@ -2,7 +2,6 @@
 
 test_description='checkout must not overwrite an untracked objects'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -28,7 +27,7 @@ test_expect_success 'checkout commit with dir must not remove untracked a/b' '
 	git rm --cached a/b &&
 	git commit -m "un-track the file" &&
 	test_must_fail git checkout start &&
-	test -f a/b
+	test_path_is_file a/b
 '
 
 test_expect_success 'create a commit where dir a/b changed to symlink' '
@@ -50,7 +49,7 @@ test_expect_success 'checkout commit with dir must not remove untracked a/b' '
 
 test_expect_success SYMLINKS 'the symlink remained' '
 
-	test -h a/b
+	test_path_is_symlink a/b
 '
 
 test_expect_success 'cleanup after previous symlink tests' '
@@ -78,6 +77,13 @@ test_expect_success 'checkout --overwrite-ignore should succeed if only ignored 
 	echo ignore >.git/info/exclude &&
 	git checkout --overwrite-ignore df_conflict &&
 	test_path_is_file some_dir
+'
+
+test_expect_success 'checkout must not overwrite untracked nested repo' '
+	git checkout -f start &&
+	rm -rf some_dir &&
+	git init some_dir &&
+	test_must_fail git checkout df_conflict
 '
 
 test_done

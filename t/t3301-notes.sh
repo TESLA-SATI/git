@@ -164,7 +164,7 @@ test_expect_success 'show notes' '
 		${indent}b1
 	EOF
 	git cat-file commit HEAD >commits &&
-	! grep b1 commits &&
+	test_grep ! b1 commits &&
 	git log -1 >actual &&
 	test_cmp expect actual
 '
@@ -248,17 +248,17 @@ test_expect_success 'git log --show-notes' '
 
 test_expect_success 'git log --no-notes' '
 	git log -1 --no-notes >actual &&
-	! grep xyzzy actual
+	test_grep ! xyzzy actual
 '
 
 test_expect_success 'git format-patch does not show notes' '
 	git format-patch -1 --stdout >actual &&
-	! grep xyzzy actual
+	test_grep ! xyzzy actual
 '
 
 test_expect_success 'git format-patch --show-notes does show notes' '
 	git format-patch --show-notes -1 --stdout >actual &&
-	grep xyzzy actual
+	test_grep xyzzy actual
 '
 
 for pretty in \
@@ -281,36 +281,36 @@ test_expect_success 'setup alternate notes ref' '
 
 test_expect_success 'git log --notes shows default notes' '
 	git log -1 --notes >actual &&
-	grep xyzzy actual &&
-	! grep alternate actual
+	test_grep xyzzy actual &&
+	test_grep ! alternate actual
 '
 
 test_expect_success 'git log --notes=X shows only X' '
 	git log -1 --notes=alternate >actual &&
-	! grep xyzzy actual &&
-	grep alternate actual
+	test_grep ! xyzzy actual &&
+	test_grep alternate actual
 '
 
 test_expect_success 'git log --notes --notes=X shows both' '
 	git log -1 --notes --notes=alternate >actual &&
-	grep xyzzy actual &&
-	grep alternate actual
+	test_grep xyzzy actual &&
+	test_grep alternate actual
 '
 
 test_expect_success 'git log --no-notes resets default state' '
 	git log -1 --notes --notes=alternate \
 		--no-notes --notes=alternate \
 		>actual &&
-	! grep xyzzy actual &&
-	grep alternate actual
+	test_grep ! xyzzy actual &&
+	test_grep alternate actual
 '
 
 test_expect_success 'git log --no-notes resets ref list' '
 	git log -1 --notes --notes=alternate \
 		--no-notes --notes \
 		>actual &&
-	grep xyzzy actual &&
-	! grep alternate actual
+	test_grep xyzzy actual &&
+	test_grep ! alternate actual
 '
 
 test_expect_success 'show -m notes' '
@@ -543,7 +543,7 @@ test_expect_success 'list notes with "git notes"' '
 
 test_expect_success '"git notes" without subcommand does not take arguments' '
 	test_expect_code 129 git notes HEAD^^ 2>err &&
-	grep "^error: unknown subcommand" err
+	test_grep "^error: unknown subcommand" err
 '
 
 test_expect_success 'list specific note with "git notes list <object>"' '
@@ -1464,7 +1464,7 @@ test_expect_success 'GIT_NOTES_REWRITE_REF overrides config' '
 	GIT_NOTES_REWRITE_REF=refs/notes/commits \
 		git notes copy --for-rewrite=foo <copy &&
 	git log -1 >actual &&
-	grep "replacement note 3" actual
+	test_grep "replacement note 3" actual
 '
 
 test_expect_success 'git notes copy diagnoses too many or too few arguments' '
@@ -1554,6 +1554,79 @@ test_expect_success 'empty notes are displayed by git log' '
 	git notes add -C "$empty_blob" --allow-empty &&
 	git log -1 >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'empty notes do not invoke the editor' '
+	test_commit 18th &&
+	GIT_EDITOR="false" git notes add -C "$empty_blob" --allow-empty &&
+	git notes remove HEAD &&
+	GIT_EDITOR="false" git notes add -m "" --allow-empty &&
+	git notes remove HEAD &&
+	GIT_EDITOR="false" git notes add -F /dev/null --allow-empty &&
+	git notes remove HEAD
+'
+
+test_expect_success 'git notes add with -m/-F invokes editor with -e' '
+	test_commit 19th &&
+	echo "edited" >expect &&
+	MSG="$(cat expect)" git notes add -m "initial" -e &&
+	git notes show >actual &&
+	test_cmp expect actual &&
+	git notes remove HEAD &&
+
+	# Add a note using -F and edit it
+	echo "initial" >note_file &&
+	MSG="$(cat expect)" git notes add -F note_file -e &&
+	git notes show >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'git notes append with -m/-F invokes the editor with -e' '
+	test_commit 20th &&
+	cat >expect <<-EOF &&
+		initial
+
+		edited
+	EOF
+	git notes add -m "initial" &&
+	MSG="edited" git notes append -m "appended" -e &&
+
+	# Verify the note content was appended and edited
+	git notes show >actual &&
+	test_cmp expect actual &&
+	git notes remove HEAD &&
+
+	# Append a note using -F and edit it
+	echo "note from file" >note_file &&
+	git notes add -m "initial" &&
+	MSG="edited" git notes append -F note_file -e &&
+
+	# Verify notes from file has been edited in editor and appended
+	git notes show >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'git notes with a combination of -m, -F and -e invokes editor' '
+	test_commit 21st &&
+	echo "foo-file-1" >note_1 &&
+	echo "foo-file-2" >note_2 &&
+	echo "edited" >expect &&
+
+	MSG=$(cat expect) git notes append -F note_1 -m "message-1" -F note_2 -e &&
+
+	# Verify that combined messages from file and -m have been edited
+	git notes show >actual &&
+	test_cmp expect actual
+'
+test_expect_success 'git notes append aborts when editor fails with -e' '
+	test_commit 22nd &&
+	echo "foo-file-1" >note_1 &&
+
+	# Try to append a note with -F and -e, but make the editor fail
+	test_env GIT_EDITOR="false" test_must_fail git notes append -F note_1 -e &&
+
+	# Verify that no note was added due to editor failure
+	test_must_fail git notes show
 '
 
 test_done

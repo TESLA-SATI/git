@@ -1,12 +1,14 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "hash.h"
 #include "hex.h"
+#include "strbuf.h"
 
-static int get_hash_hex_algop(const char *hex, unsigned char *hash,
-			      const struct git_hash_algo *algop)
+int get_hash_hex_algop(const char *hex, unsigned char *hash,
+		       const struct git_hash_algo *algop)
 {
-	int i;
-	for (i = 0; i < algop->rawsz; i++) {
+	for (size_t i = 0; i < algop->rawsz; i++) {
 		int val = hex2chr(hex);
 		if (val < 0)
 			return -1;
@@ -25,8 +27,12 @@ int get_oid_hex_algop(const char *hex, struct object_id *oid,
 		      const struct git_hash_algo *algop)
 {
 	int ret = get_hash_hex_algop(hex, oid->hash, algop);
-	if (!ret)
+	if (!ret) {
 		oid_set_algo(oid, algop);
+		if (algop->rawsz != GIT_MAX_RAWSZ)
+			memset(oid->hash + algop->rawsz, 0,
+			       GIT_MAX_RAWSZ - algop->rawsz);
+	}
 	return ret;
 }
 
@@ -49,9 +55,9 @@ int get_oid_hex(const char *hex, struct object_id *oid)
 	return get_oid_hex_algop(hex, oid, the_hash_algo);
 }
 
-int parse_oid_hex_algop(const char *hex, struct object_id *oid,
-			const char **end,
-			const struct git_hash_algo *algop)
+int parse_oid_hex_algop_impl(const char *hex, struct object_id *oid,
+			     const char **end,
+			     const struct git_hash_algo *algop)
 {
 	int ret = get_oid_hex_algop(hex, oid, algop);
 	if (!ret)
@@ -77,7 +83,6 @@ char *hash_to_hex_algop_r(char *buffer, const unsigned char *hash,
 {
 	static const char hex[] = "0123456789abcdef";
 	char *buf = buffer;
-	int i;
 
 	/*
 	 * Our struct object_id has been memset to 0, so default to printing
@@ -86,7 +91,7 @@ char *hash_to_hex_algop_r(char *buffer, const unsigned char *hash,
 	if (algop == &hash_algos[0])
 		algop = the_hash_algo;
 
-	for (i = 0; i < algop->rawsz; i++) {
+	for (size_t i = 0; i < algop->rawsz; i++) {
 		unsigned int val = *hash++;
 		*buf++ = hex[val >> 4];
 		*buf++ = hex[val & 0xf];
@@ -117,4 +122,13 @@ char *hash_to_hex(const unsigned char *hash)
 char *oid_to_hex(const struct object_id *oid)
 {
 	return hash_to_hex_algop(oid->hash, &hash_algos[oid->algo]);
+}
+
+void strbuf_add_oid_hex(struct strbuf *sb, const struct object_id *oid)
+{
+	const struct git_hash_algo *algop = oid->algo ?
+		&hash_algos[oid->algo] : the_hash_algo;
+	strbuf_grow(sb, algop->hexsz);
+	hash_to_hex_algop_r(sb->buf + sb->len, oid->hash, algop);
+	strbuf_setlen(sb, sb->len + algop->hexsz);
 }

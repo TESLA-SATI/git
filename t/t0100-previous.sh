@@ -5,7 +5,6 @@ test_description='previous branch syntax @{-n}'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'branch -d @{-1}' '
@@ -51,7 +50,7 @@ test_expect_success 'merge @{-1}~1' '
 	git checkout main &&
 	git merge @{-1}~1 &&
 	git cat-file commit HEAD >actual &&
-	grep "Merge branch '\''other'\''" actual
+	test_grep "Merge branch '\''other'\''" actual
 '
 
 test_expect_success 'merge @{-100} before checking out that many branches yet' '

@@ -5,7 +5,6 @@ test_description='tracking branch update checks for git push'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -60,7 +59,7 @@ test_expect_success 'deleted branches have their tracking branches removed' '
 test_expect_success 'already deleted tracking branches ignored' '
 	git branch -d -r origin/b3 &&
 	git push origin :b3 >output 2>&1 &&
-	! grep "^error: " output
+	test_grep ! "^error: " output
 '
 
 test_done

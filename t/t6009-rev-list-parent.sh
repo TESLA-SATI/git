@@ -5,7 +5,6 @@ test_description='ancestor culling and limiting by parent number'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 check_revlist () {
@@ -65,10 +64,10 @@ test_expect_success 'setup roots, merges and octopuses' '
 
 test_expect_success 'parse --max-parents & --min-parents' '
 	test_must_fail git rev-list --max-parents=1q HEAD 2>error &&
-	grep "not an integer" error &&
+	test_grep "not an integer" error &&
 
 	test_must_fail git rev-list --min-parents=1q HEAD 2>error &&
-	grep "not an integer" error &&
+	test_grep "not an integer" error &&
 
 	git rev-list --max-parents=1 --min-parents=1 HEAD &&
 	git rev-list --max-parents=-1 --min-parents=-1 HEAD

@@ -1,15 +1,19 @@
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "bundle-uri.h"
 #include "bundle.h"
 #include "copy.h"
-#include "environment.h"
 #include "gettext.h"
 #include "refs.h"
 #include "run-command.h"
 #include "hashmap.h"
 #include "pkt-line.h"
 #include "config.h"
+#include "fetch-pack.h"
 #include "remote.h"
+#include "trace2.h"
+#include "odb.h"
 
 static struct {
 	enum bundle_list_heuristic heuristic;
@@ -84,7 +88,10 @@ static int summarize_bundle(struct remote_bundle_info *info, void *data)
 {
 	FILE *fp = data;
 	fprintf(fp, "[bundle \"%s\"]\n", info->id);
-	fprintf(fp, "\turi = %s\n", info->uri);
+	if (info->uri)
+		fprintf(fp, "\turi = %s\n", info->uri);
+	else
+		fprintf(fp, "\t# uri = (missing)\n");
 
 	if (info->creationToken)
 		fprintf(fp, "\tcreationToken = %"PRIu64"\n", info->creationToken);
@@ -117,7 +124,7 @@ void print_bundle_list(FILE *fp, struct bundle_list *list)
 		int i;
 		for (i = 0; i < BUNDLE_HEURISTIC__COUNT; i++) {
 			if (heuristics[i].heuristic == list->heuristic) {
-				printf("\theuristic = %s\n",
+				fprintf(fp, "\theuristic = %s\n",
 				       heuristics[list->heuristic].name);
 				break;
 			}
@@ -262,10 +269,23 @@ int bundle_uri_parse_config_format(const char *uri,
 		result = 1;
 	}
 
+	if (!result) {
+		struct hashmap_iter iter;
+		struct remote_bundle_info *bundle;
+
+		hashmap_for_each_entry(&list->bundles, &iter, bundle, ent) {
+			if (!bundle->uri) {
+				error(_("bundle list at '%s': bundle '%s' has no uri"),
+				      uri, bundle->id ? bundle->id : "<unknown>");
+				result = 1;
+			}
+		}
+	}
+
 	return result;
 }
 
-static char *find_temp_filename(void)
+static char *find_temp_filename(struct repository *r)
 {
 	int fd;
 	struct strbuf name = STRBUF_INIT;
@@ -273,7 +293,8 @@ static char *find_temp_filename(void)
 	 * Find a temporary filename that is available. This is briefly
 	 * racy, but unlikely to collide.
 	 */
-	fd = odb_mkstemp(&name, "bundles/tmp_uri_XXXXXX");
+	fd = odb_mkstemp(r->objects, &name,
+			 "bundles/tmp_uri_XXXXXX");
 	if (fd < 0) {
 		warning(_("failed to create temporary file"));
 		return NULL;
@@ -291,6 +312,28 @@ static int download_https_uri_to_file(const char *file, const char *uri)
 	FILE *child_in = NULL, *child_out = NULL;
 	struct strbuf line = STRBUF_INIT;
 	int found_get = 0;
+
+	/*
+	 * The protocol we speak with git-remote-https(1) uses a space to
+	 * separate between URI and file, so the URI itself must not contain a
+	 * space. If it did, an adversary could change the location where the
+	 * downloaded file is being written to.
+	 *
+	 * Similarly, we use newlines to separate commands from one another.
+	 * Consequently, neither the URI nor the file must contain a newline or
+	 * otherwise an adversary could inject arbitrary commands.
+	 *
+	 * TODO: Restricting newlines in the target paths may break valid
+	 *       usecases, even if those are a bit more on the esoteric side.
+	 *       If this ever becomes a problem we should probably think about
+	 *       alternatives. One alternative could be to use NUL-delimited
+	 *       requests in git-remote-http(1). Another alternative could be
+	 *       to use URL quoting.
+	 */
+	if (strpbrk(uri, " \n"))
+		return error("bundle-uri: URI is malformed: '%s'", file);
+	if (strchr(file, '\n'))
+		return error("bundle-uri: filename is malformed: '%s'", file);
 
 	strvec_pushl(&cp.args, "git-remote-https", uri, NULL);
 	cp.err = -1;
@@ -334,13 +377,14 @@ cleanup:
 	if (child_in)
 		fclose(child_in);
 	if (finish_command(&cp))
-		return 1;
+		result = 1;
 	if (child_out)
 		fclose(child_out);
 	return result;
 }
 
-static int copy_uri_to_file(const char *filename, const char *uri)
+static int copy_uri_to_file(struct repository *r,
+			    const char *filename, const char *uri)
 {
 	const char *out;
 
@@ -352,7 +396,7 @@ static int copy_uri_to_file(const char *filename, const char *uri)
 		uri = out;
 
 	/* Copy as a file */
-	return copy_file(filename, uri, 0);
+	return copy_file(r, filename, uri, 0);
 }
 
 static int unbundle_from_file(struct repository *r, const char *file)
@@ -363,18 +407,27 @@ static int unbundle_from_file(struct repository *r, const char *file)
 	struct string_list_item *refname;
 	struct strbuf bundle_ref = STRBUF_INIT;
 	size_t bundle_prefix_len;
+	struct unbundle_opts opts = {
+		.flags = VERIFY_BUNDLE_QUIET |
+			 (fetch_pack_fsck_objects() ? VERIFY_BUNDLE_FSCK : 0),
+	};
 
-	if ((bundle_fd = read_bundle_header(file, &header)) < 0)
-		return 1;
+	bundle_fd = read_bundle_header(file, &header);
+	if (bundle_fd < 0) {
+		result = 1;
+		goto cleanup;
+	}
 
 	/*
 	 * Skip the reachability walk here, since we will be adding
 	 * a reachable ref pointing to the new tips, which will reach
 	 * the prerequisite commits.
 	 */
-	if ((result = unbundle(r, &header, bundle_fd, NULL,
-			       VERIFY_BUNDLE_QUIET)))
-		return 1;
+	result = unbundle(r, &header, bundle_fd, NULL, &opts);
+	if (result) {
+		result = 1;
+		goto cleanup;
+	}
 
 	/*
 	 * Convert all refs/heads/ from the bundle into refs/bundles/
@@ -389,19 +442,22 @@ static int unbundle_from_file(struct repository *r, const char *file)
 		const char *branch_name;
 		int has_old;
 
-		if (!skip_prefix(refname->string, "refs/heads/", &branch_name))
+		if (!skip_prefix(refname->string, "refs/", &branch_name))
 			continue;
 
 		strbuf_setlen(&bundle_ref, bundle_prefix_len);
 		strbuf_addstr(&bundle_ref, branch_name);
 
-		has_old = !read_ref(bundle_ref.buf, &old_oid);
-		update_ref("fetched bundle", bundle_ref.buf, oid,
-			   has_old ? &old_oid : NULL,
-			   REF_SKIP_OID_VERIFICATION,
-			   UPDATE_REFS_MSG_ON_ERR);
+		has_old = !refs_read_ref(get_main_ref_store(r),
+					 bundle_ref.buf, &old_oid);
+		refs_update_ref(get_main_ref_store(r),
+				"fetched bundle", bundle_ref.buf, oid,
+				has_old ? &old_oid : NULL,
+				0, UPDATE_REFS_MSG_ON_ERR);
 	}
 
+cleanup:
+	strbuf_release(&bundle_ref);
 	bundle_header_release(&header);
 	return result;
 }
@@ -515,11 +571,13 @@ static int fetch_bundles_by_token(struct repository *r,
 	 */
 	if (!repo_config_get_value(r,
 				   "fetch.bundlecreationtoken",
-				   &creationTokenStr) &&
-	    sscanf(creationTokenStr, "%"PRIu64, &maxCreationToken) == 1 &&
-	    bundles.items[0]->creationToken <= maxCreationToken) {
-		free(bundles.items);
-		return 0;
+				   &creationTokenStr)) {
+		if (sscanf(creationTokenStr, "%"PRIu64, &maxCreationToken) != 1)
+			maxCreationToken = 0;
+		if (bundles.items[0]->creationToken <= maxCreationToken) {
+			free(bundles.items);
+			return 0;
+		}
 	}
 
 	/*
@@ -709,13 +767,19 @@ static int fetch_bundle_uri_internal(struct repository *r,
 		return -1;
 	}
 
+	if (!bundle->uri) {
+		error(_("bundle '%s' has no uri"),
+		      bundle->id ? bundle->id : "<unknown>");
+		return -1;
+	}
+
 	if (!bundle->file &&
-	    !(bundle->file = find_temp_filename())) {
+	    !(bundle->file = find_temp_filename(r))) {
 		result = -1;
 		goto cleanup;
 	}
 
-	if ((result = copy_uri_to_file(bundle->file, bundle->uri))) {
+	if ((result = copy_uri_to_file(r, bundle->file, bundle->uri))) {
 		warning(_("failed to download bundle from URI '%s'"), bundle->uri);
 		goto cleanup;
 	}
@@ -795,6 +859,8 @@ int fetch_bundle_uri(struct repository *r, const char *uri,
 		.id = xstrdup(""),
 	};
 
+	trace2_region_enter("fetch", "fetch-bundle-uri", r);
+
 	init_bundle_list(&list);
 
 	/*
@@ -820,6 +886,7 @@ cleanup:
 	for_all_bundles_in_list(&list, unlink_bundle, NULL);
 	clear_bundle_list(&list);
 	clear_remote_bundle_info(&bundle, NULL);
+	trace2_region_leave("fetch", "fetch-bundle-uri", r);
 	return result;
 }
 
@@ -879,8 +946,12 @@ static int config_to_packet_line(const char *key, const char *value,
 {
 	struct packet_reader *writer = data;
 
-	if (starts_with(key, "bundle."))
-		packet_write_fmt(writer->fd, "%s=%s", key, value);
+	if (starts_with(key, "bundle.")) {
+		if (value && *value)
+			packet_write_fmt(writer->fd, "%s=%s", key, value);
+		else
+			warning(_("config '%s' has no value"), key);
+	}
 
 	return 0;
 }

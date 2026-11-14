@@ -35,7 +35,7 @@ test_expect_success 'basic git p4 clone' '
 
 test_expect_success 'depot typo error' '
 	test_must_fail git p4 clone --dest="$git" /depot 2>errs &&
-	grep "Depot paths must start with" errs
+	test_grep "Depot paths must start with" errs
 '
 
 test_expect_success 'git p4 clone @all' '
@@ -297,8 +297,20 @@ test_expect_success 'exit when p4 fails to produce marshaled output' '
 # p4 changes, files, or describe; just in p4 print.  If P4CLIENT is unset, the
 # message will include "Librarian checkout".
 test_expect_success 'exit gracefully for p4 server errors' '
-	test_when_finished "mv \"$db\"/depot/file1,v,hidden \"$db\"/depot/file1,v" &&
-	mv "$db"/depot/file1,v "$db"/depot/file1,v,hidden &&
+	# Note that newer Perforce versions started to store files
+	# compressed in directories. The case statement handles both
+	# old and new layout.
+	case "$(echo "$db"/depot/file1*)" in
+	*,v)
+		test_when_finished "mv \"$db\"/depot/file1,v,hidden \"$db\"/depot/file1,v" &&
+		mv "$db"/depot/file1,v "$db"/depot/file1,v,hidden;;
+	*,d)
+		path="$(echo "$db"/depot/file1,d/*.gz)" &&
+		test_when_finished "mv \"$path\",hidden \"$path\"" &&
+		mv "$path" "$path",hidden;;
+	*)
+		BUG "unhandled p4d layout";;
+	esac &&
 	test_when_finished cleanup_git &&
 	test_expect_code 1 git p4 clone --dest="$git" //depot@1 >out 2>err &&
 	test_grep "Error from p4 print" err
@@ -344,7 +356,7 @@ test_expect_success 'unresolvable host in P4PORT should display error' '
 		P4PORT=nosuchhost:65537 &&
 		export P4PORT &&
 		test_expect_code 1 git p4 sync >out 2>err &&
-		grep "connect to nosuchhost" err
+		test_grep "connect to nosuchhost" err
 	)
 '
 
@@ -362,7 +374,7 @@ test_expect_success 'run hook p4-pre-submit before submit' '
 		git commit -m "add hello.txt" &&
 		git config git-p4.skipSubmitEdit true &&
 		git p4 submit --dry-run >out &&
-		grep "Would apply" out
+		test_grep "Would apply" out
 	) &&
 	test_hook -C "$git" p4-pre-submit <<-\EOF &&
 	exit 0
@@ -370,7 +382,7 @@ test_expect_success 'run hook p4-pre-submit before submit' '
 	(
 		cd "$git" &&
 		git p4 submit --dry-run >out &&
-		grep "Would apply" out
+		test_grep "Would apply" out
 	) &&
 	test_hook -C "$git" --clobber p4-pre-submit <<-\EOF &&
 	exit 1
@@ -378,7 +390,7 @@ test_expect_success 'run hook p4-pre-submit before submit' '
 	(
 		cd "$git" &&
 		test_must_fail git p4 submit --dry-run >errs 2>&1 &&
-		! grep "Would apply" errs
+		test_grep ! "Would apply" errs
 	)
 '
 

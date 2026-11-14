@@ -10,7 +10,6 @@ same command line parser, so testing one should be sufficient; pick
 diff-files as a representative.
 '
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-diff.sh
 
@@ -37,7 +36,7 @@ test_expect_success 'git diff-files -p after editing work tree.' '
 # that's as far as it comes
 if [ "$(git config --get core.filemode)" = false ]
 then
-	say 'filemode disabled on the filesystem'
+	skip_all='filemode disabled on the filesystem'
 	test_done
 fi
 
@@ -85,7 +84,7 @@ test_expect_success 'git diff-files --no-patch --patch shows the patch' '
 
 test_expect_success 'git diff-files --no-patch --patch-with-raw shows the patch and raw data' '
 	git diff-files --no-patch --patch-with-raw >actual &&
-	grep -q "^:100644 100755 .* $ZERO_OID M	path0\$" actual &&
+	test_grep -q "^:100644 100755 .* $ZERO_OID M	path0\$" actual &&
 	tail -n +4 actual >actual-patch &&
 	compare_diff_patch expected actual-patch
 '

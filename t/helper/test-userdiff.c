@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "test-tool.h"
 #include "setup.h"
 #include "userdiff.h"
@@ -38,8 +40,8 @@ int cmd__userdiff(int argc, const char **argv)
 		return error("unknown argument %s", argv[1]);
 
 	if (want & USERDIFF_DRIVER_TYPE_CUSTOM) {
-		setup_git_directory();
-		git_config(cmd__userdiff_config, NULL);
+		setup_git_directory(the_repository);
+		repo_config(the_repository, cmd__userdiff_config, NULL);
 	}
 
 	for_each_userdiff_driver(driver_cb, &want);

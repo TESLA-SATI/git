@@ -2,7 +2,6 @@
 
 test_description='diff --relative tests'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -243,6 +242,15 @@ test_expect_failure 'diff --relative with change in subdir' '
 	++>>>>>>> br1
 	EOF
 	git -C subdir diff --relative >out &&
+	test_cmp expected out
+'
+
+test_expect_success 'diff --relative --cached with change in subdir' '
+	git switch br3 &&
+	test_when_finished "git merge --abort" &&
+	test_must_fail git merge sub1 &&
+	echo file0 >expected &&
+	git -C subdir diff --relative --name-only --cached >out &&
 	test_cmp expected out
 '
 

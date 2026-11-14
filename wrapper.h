@@ -16,6 +16,7 @@ void *xmmap_gently(void *start, size_t length, int prot, int flags, int fd, off_
 int xopen(const char *path, int flags, ...);
 ssize_t xread(int fd, void *buf, size_t len);
 ssize_t xwrite(int fd, const void *buf, size_t len);
+ssize_t xwritev(int fd, struct iovec *iov, int iovcnt);
 ssize_t xpread(int fd, void *buf, size_t len, off_t offset);
 int xdup(int fd);
 FILE *xfopen(const char *path, const char *mode);
@@ -37,6 +38,8 @@ int xsnprintf(char *dst, size_t max, const char *fmt, ...);
 
 int xgethostname(char *buf, size_t len);
 
+char *git_mkdtemp(char *pattern);
+
 /* set default permissions by passing mode arguments to open(2) */
 int git_mkstemps_mode(char *pattern, int suffix_len, int mode);
 int git_mkstemp_mode(char *pattern, int mode);
@@ -44,6 +47,15 @@ int git_mkstemp_mode(char *pattern, int mode);
 ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
 ssize_t pread_in_full(int fd, void *buf, size_t count, off_t offset);
+
+/*
+ * Try to write all iovecs. Returns -1 in case an error occurred with a proper
+ * errno set, the number of bytes written otherwise.
+ *
+ * Note that the iovec will be modified as a result of this call to adjust for
+ * partial writes!
+ */
+ssize_t writev_in_full(int fd, struct iovec *iov, int iovcnt);
 
 static inline ssize_t write_str_in_full(int fd, const char *str)
 {
@@ -66,7 +78,9 @@ void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))
 void write_file(const char *path, const char *fmt, ...);
 
-/* Return 1 if the file is empty or does not exists, 0 otherwise. */
+/* Return 1 if the file does not exist, 0 otherwise. */
+int is_missing_file(const char *filename);
+/* Return 1 if the file is empty or does not exist, 0 otherwise. */
 int is_empty_or_missing_file(const char *filename);
 
 enum fsync_action {
@@ -127,17 +141,43 @@ int open_nofollow(const char *path, int flags);
 
 void sleep_millisec(int millisec);
 
+enum {
+	/*
+	 * Accept insecure bytes, which some CSPRNG implementations may return
+	 * in case the entropy pool has been exhausted.
+	 */
+	CSPRNG_BYTES_INSECURE = (1 << 0),
+};
+
 /*
  * Generate len bytes from the system cryptographically secure PRNG.
  * Returns 0 on success and -1 on error, setting errno.  The inability to
- * satisfy the full request is an error.
+ * satisfy the full request is an error. Accepts CSPRNG flags.
  */
-int csprng_bytes(void *buf, size_t len);
+int csprng_bytes(void *buf, size_t len, unsigned flags);
 
 /*
  * Returns a random uint32_t, uniformly distributed across all possible
- * values.
+ * values. Accepts CSPRNG flags.
  */
-uint32_t git_rand(void);
+uint32_t git_rand(unsigned flags);
+
+/* Provide log2 of the given `size_t`. */
+static inline unsigned log2u(uintmax_t sz)
+{
+	unsigned l = 0;
+
+	/*
+	 * Technically this isn't required, but it helps the compiler optimize
+	 * this to a `bsr` instruction.
+	 */
+	if (!sz)
+		return 0;
+
+	for (; sz; sz >>= 1)
+		l++;
+
+	return l - 1;
+}
 
 #endif /* WRAPPER_H */

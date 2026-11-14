@@ -3,6 +3,8 @@
  * a `git fsmonitor--daemon` daemon.
  */
 
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "test-tool.h"
 #include "parse-options.h"
 #include "fsmonitor-ipc.h"
@@ -208,7 +210,7 @@ int cmd__fsmonitor_client(int argc, const char **argv)
 
 	subcmd = argv[0];
 
-	setup_git_directory();
+	setup_git_directory(the_repository);
 
 	if (!strcmp(subcmd, "query"))
 		return !!do_send_query(token);

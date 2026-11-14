@@ -2,7 +2,6 @@
 
 test_description='basic symbolic-ref tests'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # If the tests munging HEAD fail, they can break detection of
@@ -16,7 +15,7 @@ reset_to_sane() {
 test_expect_success 'setup' '
 	git symbolic-ref HEAD refs/heads/foo &&
 	test_commit file &&
-	"$TAR" cf .git.tar .git/
+	"$TAR" cf .git.tar .git
 '
 
 test_expect_success 'symbolic-ref read/write roundtrip' '
@@ -38,6 +37,18 @@ test_expect_success 'symbolic-ref refuses bare sha1' '
 '
 
 reset_to_sane
+
+test_expect_success 'symbolic-ref reports a non-symbolic ref' '
+	test_must_fail git symbolic-ref refs/heads/foo >out 2>err &&
+	test_must_be_empty out &&
+	test_grep "is not a symbolic ref" err
+'
+
+test_expect_success 'symbolic-ref -q is silent on a non-symbolic ref' '
+	test_must_fail git symbolic-ref -q refs/heads/foo >out 2>err &&
+	test_must_be_empty out &&
+	test_must_be_empty err
+'
 
 test_expect_success 'HEAD cannot be removed' '
 	test_must_fail git symbolic-ref -d HEAD

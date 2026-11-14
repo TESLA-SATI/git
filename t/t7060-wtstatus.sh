@@ -5,11 +5,11 @@ test_description='basic work tree status reporting'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
 	git config --global advice.statusuoption false &&
+	echo "/.gitconfig" >>.git/info/exclude &&
 	test_commit A &&
 	test_commit B oneside added &&
 	git checkout A^0 &&
@@ -37,7 +37,7 @@ test_expect_success 'M/D conflict does not segfault' '
 	cat >expect <<EOF &&
 On branch side
 You have unmerged paths.
-  (fix conflicts and run "git commit")
+  (fix conflicts and run "git merge --continue")
   (use "git merge --abort" to abort the merge)
 
 Unmerged paths:
@@ -141,7 +141,7 @@ test_expect_success 'status when conflicts with add and rm advice (deleted by th
 	cat >expected <<\EOF &&
 On branch main
 You have unmerged paths.
-  (fix conflicts and run "git commit")
+  (fix conflicts and run "git merge --continue")
   (use "git merge --abort" to abort the merge)
 
 Unmerged paths:
@@ -174,7 +174,7 @@ test_expect_success 'status when conflicts with add and rm advice (both deleted)
 	cat >expected <<\EOF &&
 On branch conflict_second
 You have unmerged paths.
-  (fix conflicts and run "git commit")
+  (fix conflicts and run "git merge --continue")
   (use "git merge --abort" to abort the merge)
 
 Unmerged paths:
@@ -198,7 +198,7 @@ test_expect_success 'status when conflicts with only rm advice (both deleted)' '
 	cat >expected <<\EOF &&
 On branch conflict_second
 You have unmerged paths.
-  (fix conflicts and run "git commit")
+  (fix conflicts and run "git merge --continue")
   (use "git merge --abort" to abort the merge)
 
 Changes to be committed:
@@ -222,7 +222,6 @@ test_expect_success 'status --branch with detached HEAD' '
 	git status --branch --porcelain >actual &&
 	cat >expected <<-EOF &&
 	## HEAD (no branch)
-	?? .gitconfig
 	?? actual
 	?? expect
 	?? expected
@@ -238,7 +237,6 @@ test_expect_success 'status --porcelain=v1 --branch with detached HEAD' '
 	git status --branch --porcelain=v1 >actual &&
 	cat >expected <<-EOF &&
 	## HEAD (no branch)
-	?? .gitconfig
 	?? actual
 	?? expect
 	?? expected

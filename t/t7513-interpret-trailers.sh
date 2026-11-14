@@ -175,6 +175,46 @@ test_expect_success 'with only a title in the message' '
 	test_cmp expected actual
 '
 
+test_expect_success 'with a bodiless message that lacks a trailing newline after the subject' '
+	cat >expected <<-\EOF &&
+		area: change
+
+		Reviewed-by: Peff
+		Acked-by: Johan
+	EOF
+	printf "area: change" |
+	git interpret-trailers --trailer "Reviewed-by: Peff" \
+		--trailer "Acked-by: Johan" >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'with a bodied message that lacks a trailing newline after the body' '
+	cat >expected <<-\EOF &&
+		area: change
+
+		details about the change.
+
+		Reviewed-by: Peff
+		Acked-by: Johan
+	EOF
+	printf "area: change\n\ndetails about the change." |
+	git interpret-trailers --trailer "Reviewed-by: Peff" \
+		--trailer "Acked-by: Johan" >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'with a message that lacks a trailing newline after the trailers' '
+	cat >expected <<-\EOF &&
+		area: change
+
+		Reviewed-by: Peff
+		Acked-by: Johan
+	EOF
+	printf "area: change\n\nReviewed-by: Peff" |
+	git interpret-trailers --trailer "Acked-by: Johan" >actual &&
+	test_cmp expected actual
+'
+
 test_expect_success 'with multiline title in the message' '
 	cat >expected <<-\EOF &&
 		place of
@@ -817,7 +857,7 @@ test_expect_success 'using "--where after" with "--no-where"' '
 # the hardcoded default (in WHERE_END) assuming the absence of .gitconfig).
 # Here, the "start" setting of trailer.where is respected, so the new "Acked-by"
 # and "Bug" trailers are placed at the beginning, and not at the end which is
-# the harcoded default.
+# the hardcoded default.
 test_expect_success 'using "--where after" with "--no-where" defaults to configuration' '
 	test_config trailer.ack.key "Acked-by= " &&
 	test_config trailer.bug.key "Bug #" &&
@@ -841,7 +881,7 @@ test_expect_success 'using "--where after" with "--no-where" defaults to configu
 # immediately after it. For the next trailer (Bug #42), we default to using the
 # hardcoded WHERE_END because we don't have any "trailer.where" or
 # "trailer.bug.where" configured.
-test_expect_success 'using "--no-where" defaults to harcoded default if nothing configured' '
+test_expect_success 'using "--no-where" defaults to hardcoded default if nothing configured' '
 	test_config trailer.ack.key "Acked-by= " &&
 	test_config trailer.bug.key "Bug #" &&
 	test_config trailer.separators ":=#" &&
@@ -1947,6 +1987,25 @@ test_expect_success 'handling of --- lines in conjunction with cut-lines' '
 	EOF
 
 	test_cmp expected actual
+'
+
+test_expect_success 'URLs and lines that are not quite URLs' '
+	cat >expect <<-\EOF &&
+	https: //www.a-trailer.org
+	https: //www.another-trailer.org
+	Signed-off-by: somebody <somebody@somewhere>
+	EOF
+	git interpret-trailers --only-trailers >actual <<-\EOF &&
+	subject
+
+	body
+
+	https://www.not-a-trailer.org
+	https ://www.a-trailer.org
+	https: //www.another-trailer.org
+	Signed-off-by: somebody <somebody@somewhere>
+	EOF
+	test_cmp expect actual
 '
 
 test_done

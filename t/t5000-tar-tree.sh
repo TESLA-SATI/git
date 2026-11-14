@@ -136,6 +136,8 @@ test_expect_success 'end-of-options is correctly eaten' '
 
 test_expect_success 'populate workdir' '
 	mkdir a &&
+	echo "a files_named_a" >.gitattributes &&
+	git add .gitattributes &&
 	echo simple textfile >a/a &&
 	ten=0123456789 &&
 	hundred="$ten$ten$ten$ten$ten$ten$ten$ten$ten$ten" &&
@@ -321,14 +323,14 @@ test_expect_success 'setup tar filters' '
 
 test_expect_success 'archive --list mentions user filter' '
 	git archive --list >output &&
-	grep "^tar\.foo\$" output &&
-	grep "^bar\$" output
+	test_grep "^tar\.foo\$" output &&
+	test_grep "^bar\$" output
 '
 
 test_expect_success 'archive --list shows only enabled remote filters' '
 	git archive --list --remote=. >output &&
-	! grep "^tar\.foo\$" output &&
-	grep "^bar\$" output
+	test_grep ! "^tar\.foo\$" output &&
+	test_grep "^bar\$" output
 '
 
 test_expect_success 'invoke tar filter by format' '
@@ -438,13 +440,23 @@ test_expect_success 'catch non-matching pathspec' '
 
 test_expect_success 'reject paths outside the current directory' '
 	test_must_fail git -C a/bin archive HEAD .. >/dev/null 2>err &&
-	grep "outside the current directory" err
+	test_grep "outside the current directory" err
 '
 
 test_expect_success 'allow pathspecs that resolve to the current directory' '
 	git -C a/bin archive -v HEAD ../bin >/dev/null 2>actual &&
 	cat >expect <<-\EOF &&
 	sh
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'attr pathspec in bare repo' '
+	test_expect_code 0 git --git-dir=bare.git archive -v HEAD \
+		":(attr:files_named_a)" >/dev/null 2>actual &&
+	cat >expect <<-\EOF &&
+	a/
+	a/a
 	EOF
 	test_cmp expect actual
 '
@@ -491,8 +503,8 @@ test_expect_success LONG_IS_64BIT 'set up repository with huge blob' '
 # would generate the whole 64GB).
 test_expect_success LONG_IS_64BIT 'generate tar with huge size' '
 	{
-		git archive HEAD
-		echo $? >exit-code
+		{ ret=0 && git archive HEAD || ret=$?; } &&
+		echo "$ret" >exit-code
 	} | test_copy_bytes 4096 >huge.tar &&
 	echo 141 >expect &&
 	test_cmp expect exit-code

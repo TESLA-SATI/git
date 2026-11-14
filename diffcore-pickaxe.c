@@ -2,6 +2,9 @@
  * Copyright (C) 2005 Junio C Hamano
  * Copyright (C) 2010 Google Inc.
  */
+
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "diff.h"
 #include "diffcore.h"
@@ -182,9 +185,7 @@ static void pickaxe(struct diff_queue_struct *q, struct diff_options *o,
 		    regex_t *regexp, kwset_t kws, pickaxe_fn fn)
 {
 	int i;
-	struct diff_queue_struct outq;
-
-	DIFF_QUEUE_CLEAR(&outq);
+	struct diff_queue_struct outq = DIFF_QUEUE_INIT;
 
 	if (o->pickaxe_opts & DIFF_PICKAXE_ALL) {
 		/* Showing the whole changeset if needle exists */
@@ -202,7 +203,7 @@ static void pickaxe(struct diff_queue_struct *q, struct diff_options *o,
 		for (i = 0; i < q->nr; i++)
 			diff_free_filepair(q->queue[i]);
 	} else {
-		/* Showing only the filepairs that has the needle */
+		/* Showing only the filepairs that have the needle */
 		for (i = 0; i < q->nr; i++) {
 			struct diff_filepair *p = q->queue[i];
 			if (pickaxe_match(p, o, regexp, kws, fn))

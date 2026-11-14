@@ -2,7 +2,6 @@
 
 test_description='test git worktree move, remove, lock and unlock'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -76,8 +75,8 @@ test_expect_success 'move worktree' '
 	git worktree move source destination &&
 	test_path_is_missing source &&
 	git worktree list --porcelain >out &&
-	grep "^worktree.*/destination$" out &&
-	! grep "^worktree.*/source$" out &&
+	test_grep "^worktree.*/destination$" out &&
+	test_grep ! "^worktree.*/source$" out &&
 	git -C destination log --format=%s >actual2 &&
 	echo init >expected2 &&
 	test_cmp expected2 actual2
@@ -93,7 +92,7 @@ test_expect_success 'move worktree to another dir' '
 	test_when_finished "git worktree move some-dir/destination destination" &&
 	test_path_is_missing destination &&
 	git worktree list --porcelain >out &&
-	grep "^worktree.*/some-dir/destination$" out &&
+	test_grep "^worktree.*/some-dir/destination$" out &&
 	git -C some-dir/destination log --format=%s >actual2 &&
 	echo init >expected2 &&
 	test_cmp expected2 actual2
@@ -245,6 +244,31 @@ test_expect_success 'not remove a repo with initialized submodule' '
 		git -C to-remove submodule update &&
 		test_must_fail git worktree remove to-remove
 	)
+'
+
+test_expect_success 'move worktree with absolute path to relative path' '
+	test_config worktree.useRelativePaths false &&
+	git worktree add ./absolute &&
+	git worktree move --relative-paths absolute relative &&
+	echo "gitdir: ../.git/worktrees/absolute" >expect &&
+	test_cmp expect relative/.git &&
+	echo "../../../relative/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir &&
+	test_config worktree.useRelativePaths true &&
+	git worktree move relative relative2 &&
+	echo "gitdir: ../.git/worktrees/absolute" >expect &&
+	test_cmp expect relative2/.git &&
+	echo "../../../relative2/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir
+'
+
+test_expect_success 'move worktree with relative path to absolute path' '
+	test_config worktree.useRelativePaths true &&
+	git worktree move --no-relative-paths relative2 absolute &&
+	echo "gitdir: $(pwd)/.git/worktrees/absolute" >expect &&
+	test_cmp expect absolute/.git &&
+	echo "$(pwd)/absolute/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir
 '
 
 test_done

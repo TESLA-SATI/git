@@ -3,11 +3,15 @@
  *
  * Copyright (c) 2006 Junio C Hamano
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "abspath.h"
+#include "environment.h"
 #include "gettext.h"
 #include "hex.h"
-#include "repository.h"
 #include "config.h"
 #include "tag.h"
 #include "tree-walk.h"
@@ -21,12 +25,14 @@
 #include "setup.h"
 #include "submodule.h"
 #include "submodule-config.h"
-#include "object-file.h"
 #include "object-name.h"
-#include "object-store-ll.h"
-#include "packfile.h"
+#include "odb.h"
+#include "odb/source.h"
+#include "oid-array.h"
+#include "oidset.h"
 #include "pager.h"
 #include "path.h"
+#include "promisor-remote.h"
 #include "read-cache-ll.h"
 #include "write-or-die.h"
 
@@ -450,22 +456,12 @@ static int grep_submodule(struct grep_opt *opt,
 		return 0;
 
 	subrepo = xmalloc(sizeof(*subrepo));
-	if (repo_submodule_init(subrepo, superproject, path, null_oid())) {
+	if (repo_submodule_init(subrepo, superproject, path, null_oid(opt->repo->hash_algo))) {
 		free(subrepo);
 		return 0;
 	}
 	ALLOC_GROW(repos_to_free, repos_to_free_nr + 1, repos_to_free_alloc);
 	repos_to_free[repos_to_free_nr++] = subrepo;
-
-	/*
-	 * NEEDSWORK: repo_read_gitmodules() might call
-	 * add_to_alternates_memory() via config_from_gitmodules(). This
-	 * operation causes a race condition with concurrent object readings
-	 * performed by the worker threads. That's why we need obj_read_lock()
-	 * here. It should be removed once it's no longer necessary to add the
-	 * subrepo's odbs to the in-memory alternates list.
-	 */
-	obj_read_lock();
 
 	/*
 	 * NEEDSWORK: when reading a submodule, the sparsity settings in the
@@ -478,7 +474,7 @@ static int grep_submodule(struct grep_opt *opt,
 	 *	"forget" the sparse-index feature switch. As a result, the index
 	 *	of these submodules are expanded unexpectedly.
 	 *
-	 * 2. "core_apply_sparse_checkout"
+	 * 2. "config_values_private_.apply_sparse_checkout"
 	 *	When running `grep` in the superproject, this setting is
 	 *	populated using the superproject's configs. However, once
 	 *	initialized, this config is globally accessible and is read by
@@ -492,17 +488,14 @@ static int grep_submodule(struct grep_opt *opt,
 	 *	ditto.
 	 *
 	 * Note that this list is not exhaustive.
+	 *
+	 * NEEDSWORK: initializing the subrepository is not thread-safe,
+	 * either, as it may cause us to race around `get_main_ref_store()`. We
+	 * thus need to hold the object-read lock to serialize all readers with
+	 * one another.
 	 */
+	obj_read_lock();
 	repo_read_gitmodules(subrepo, 0);
-
-	/*
-	 * All code paths tested by test code no longer need submodule ODBs to
-	 * be added as alternates, but add it to the list just in case.
-	 * Submodule ODBs added through add_submodule_odb_by_path() will be
-	 * lazily registered as alternates when needed (and except in an
-	 * unexpected code interaction, it won't be needed).
-	 */
-	add_submodule_odb_by_path(subrepo->objects->odb->path);
 	obj_read_unlock();
 
 	memcpy(&subopt, opt, sizeof(subopt));
@@ -512,15 +505,13 @@ static int grep_submodule(struct grep_opt *opt,
 		enum object_type object_type;
 		struct tree_desc tree;
 		void *data;
-		unsigned long size;
+		size_t size;
 		struct strbuf base = STRBUF_INIT;
 
 		obj_read_lock();
-		object_type = oid_object_info(subrepo, oid, NULL);
+		object_type = odb_read_object_info(subrepo->objects, oid, NULL);
 		obj_read_unlock();
-		data = read_object_with_reference(subrepo,
-						  oid, OBJ_TREE,
-						  &size, NULL);
+		data = odb_read_object_peeled(subrepo->objects, oid, OBJ_TREE, &size, NULL);
 		if (!data)
 			die(_("unable to read tree (%s)"), oid_to_hex(oid));
 
@@ -567,10 +558,10 @@ static int grep_cache(struct grep_opt *opt,
 			enum object_type type;
 			struct tree_desc tree;
 			void *data;
-			unsigned long size;
+			size_t size;
 
-			data = repo_read_object_file(the_repository, &ce->oid,
-						     &type, &size);
+			data = odb_read_object(the_repository->objects, &ce->oid,
+					       &type, &size);
 			if (!data)
 				die(_("unable to read tree %s"), oid_to_hex(&ce->oid));
 			init_tree_desc(&tree, &ce->oid, data, size);
@@ -660,10 +651,10 @@ static int grep_tree(struct grep_opt *opt, const struct pathspec *pathspec,
 			enum object_type type;
 			struct tree_desc sub;
 			void *data;
-			unsigned long size;
+			size_t size;
 
-			data = repo_read_object_file(the_repository,
-						     &entry.oid, &type, &size);
+			data = odb_read_object(the_repository->objects,
+					       &entry.oid, &type, &size);
 			if (!data)
 				die(_("unable to read tree (%s)"),
 				    oid_to_hex(&entry.oid));
@@ -689,6 +680,144 @@ static int grep_tree(struct grep_opt *opt, const struct pathspec *pathspec,
 	return hit;
 }
 
+static void collect_blob_oids_for_tree(struct repository *repo,
+				       const struct pathspec *pathspec,
+				       struct tree_desc *tree,
+				       struct strbuf *base,
+				       int tn_len,
+				       struct oidset *blob_oids)
+{
+	struct name_entry entry;
+	int old_baselen = base->len;
+	struct strbuf name = STRBUF_INIT;
+	enum interesting match = entry_not_interesting;
+
+	while (tree_entry(tree, &entry)) {
+		if (match != all_entries_interesting) {
+			strbuf_addstr(&name, base->buf + tn_len);
+			match = tree_entry_interesting(repo->index,
+						       &entry, &name,
+						       pathspec);
+			strbuf_reset(&name);
+
+			if (match == all_entries_not_interesting)
+				break;
+			if (match == entry_not_interesting)
+				continue;
+		}
+
+		strbuf_add(base, entry.path, tree_entry_len(&entry));
+
+		if (S_ISREG(entry.mode)) {
+			if (!odb_has_object(repo->objects, &entry.oid, 0))
+				oidset_insert(blob_oids, &entry.oid);
+		} else if (S_ISDIR(entry.mode)) {
+			enum object_type type;
+			struct tree_desc sub_tree;
+			void *data;
+			size_t size;
+
+			data = odb_read_object(repo->objects, &entry.oid,
+					       &type, &size);
+			if (!data)
+				die(_("unable to read tree (%s)"),
+				    oid_to_hex(&entry.oid));
+
+			strbuf_addch(base, '/');
+			init_tree_desc(&sub_tree, &entry.oid, data, size);
+			collect_blob_oids_for_tree(repo, pathspec, &sub_tree,
+						   base, tn_len, blob_oids);
+			free(data);
+		}
+		/*
+		 * ...no else clause for S_ISGITLINK: submodules have their
+		 * own promisor configuration and would need separate fetches
+		 * anyway.
+		 */
+
+		strbuf_setlen(base, old_baselen);
+	}
+
+	strbuf_release(&name);
+}
+
+static void collect_blob_oids_for_treeish(struct grep_opt *opt,
+					  const struct pathspec *pathspec,
+					  const struct object_id *tree_ish_oid,
+					  const char *name,
+					  struct oidset *blob_oids)
+{
+	struct tree_desc tree;
+	void *data;
+	size_t size;
+	struct strbuf base = STRBUF_INIT;
+	int len;
+
+	data = odb_read_object_peeled(opt->repo->objects, tree_ish_oid,
+				      OBJ_TREE, &size, NULL);
+
+	if (!data)
+		return;
+
+	len = name ? strlen(name) : 0;
+	if (len) {
+		strbuf_add(&base, name, len);
+		strbuf_addch(&base, ':');
+	}
+	init_tree_desc(&tree, tree_ish_oid, data, size);
+
+	collect_blob_oids_for_tree(opt->repo, pathspec, &tree,
+				   &base, base.len, blob_oids);
+
+	strbuf_release(&base);
+	free(data);
+}
+
+static void prefetch_grep_blobs(struct grep_opt *opt,
+				const struct pathspec *pathspec,
+				const struct object_array *list)
+{
+	struct oidset blob_oids = OIDSET_INIT;
+
+	/* Exit if we're not in a partial clone */
+	if (!repo_has_promisor_remote(opt->repo))
+		return;
+
+	/* For each tree, gather the blobs in it */
+	for (int i = 0; i < list->nr; i++) {
+		struct object *real_obj;
+
+		obj_read_lock();
+		real_obj = deref_tag(opt->repo, list->objects[i].item,
+				     NULL, 0);
+		obj_read_unlock();
+
+		if (real_obj &&
+		    (real_obj->type == OBJ_COMMIT ||
+		     real_obj->type == OBJ_TREE))
+			collect_blob_oids_for_treeish(opt, pathspec,
+						      &real_obj->oid,
+						      list->objects[i].name,
+						      &blob_oids);
+	}
+
+	/* Prefetch the blobs we found */
+	if (oidset_size(&blob_oids)) {
+		struct oid_array to_fetch = OID_ARRAY_INIT;
+		struct oidset_iter iter;
+		const struct object_id *oid;
+
+		oidset_iter_init(&blob_oids, &iter);
+		while ((oid = oidset_iter_next(&iter)))
+			oid_array_append(&to_fetch, oid);
+
+		promisor_remote_get_direct(opt->repo, to_fetch.oid, to_fetch.nr);
+
+		oid_array_clear(&to_fetch);
+	}
+	oidset_clear(&blob_oids);
+}
+
 static int grep_object(struct grep_opt *opt, const struct pathspec *pathspec,
 		       struct object *obj, const char *name, const char *path)
 {
@@ -697,13 +826,12 @@ static int grep_object(struct grep_opt *opt, const struct pathspec *pathspec,
 	if (obj->type == OBJ_COMMIT || obj->type == OBJ_TREE) {
 		struct tree_desc tree;
 		void *data;
-		unsigned long size;
+		size_t size;
 		struct strbuf base;
 		int hit, len;
 
-		data = read_object_with_reference(opt->repo,
-						  &obj->oid, OBJ_TREE,
-						  &size, NULL);
+		data = odb_read_object_peeled(opt->repo->objects, &obj->oid,
+					      OBJ_TREE, &size, NULL);
 		if (!data)
 			die(_("unable to read tree (%s)"), oid_to_hex(&obj->oid));
 
@@ -730,6 +858,8 @@ static int grep_objects(struct grep_opt *opt, const struct pathspec *pathspec,
 	int hit = 0;
 	const unsigned int nr = list->nr;
 
+	prefetch_grep_blobs(opt, pathspec, list);
+
 	for (i = 0; i < nr; i++) {
 		struct object *real_obj;
 
@@ -753,7 +883,7 @@ static int grep_objects(struct grep_opt *opt, const struct pathspec *pathspec,
 		if (recurse_submodules) {
 			submodule_free(opt->repo);
 			obj_read_lock();
-			gitmodules_config_oid(&real_obj->oid);
+			gitmodules_config_oid(the_repository, &real_obj->oid);
 			obj_read_unlock();
 		}
 		if (grep_object(opt, pathspec, real_obj, list->objects[i].name,
@@ -888,7 +1018,10 @@ static int pattern_callback(const struct option *opt, const char *arg,
 	return 0;
 }
 
-int cmd_grep(int argc, const char **argv, const char *prefix)
+int cmd_grep(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repo UNUSED)
 {
 	int hit = 0;
 	int cached = 0, untracked = 0, opt_exclude = -1;
@@ -903,6 +1036,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	int dummy;
 	int use_index = 1;
 	int allow_revs;
+	int ret;
 
 	struct option options[] = {
 		OPT_BOOL(0, "cached", &cached,
@@ -976,9 +1110,9 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 		OPT_CALLBACK('C', "context", &opt, N_("n"),
 			N_("show <n> context lines before and after matches"),
 			context_callback),
-		OPT_INTEGER('B', "before-context", &opt.pre_context,
+		OPT_UNSIGNED('B', "before-context", &opt.pre_context,
 			N_("show <n> context lines before matches")),
-		OPT_INTEGER('A', "after-context", &opt.post_context,
+		OPT_UNSIGNED('A', "after-context", &opt.post_context,
 			N_("show <n> context lines after matches")),
 		OPT_INTEGER(0, "threads", &num_threads,
 			N_("use <n> worker threads")),
@@ -1010,10 +1144,16 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 		OPT_BOOL(0, "all-match", &opt.all_match,
 			N_("show only matches from files that match all patterns")),
 		OPT_GROUP(""),
-		{ OPTION_STRING, 'O', "open-files-in-pager", &show_in_pager,
-			N_("pager"), N_("show matching files in the pager"),
-			PARSE_OPT_OPTARG | PARSE_OPT_NOCOMPLETE,
-			NULL, (intptr_t)default_pager },
+		{
+			.type = OPTION_STRING,
+			.short_name = 'O',
+			.long_name = "open-files-in-pager",
+			.value = &show_in_pager,
+			.argh = N_("pager"),
+			.help = N_("show matching files in the pager"),
+			.flags = PARSE_OPT_OPTARG | PARSE_OPT_NOCOMPLETE,
+			.defval = (intptr_t)default_pager,
+		},
 		OPT_BOOL_F(0, "ext-grep", &external_grep_allowed__ignored,
 			   N_("allow calling of grep(1) (ignored by this build)"),
 			   PARSE_OPT_NOCOMPLETE),
@@ -1024,7 +1164,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	grep_prefix = prefix;
 
 	grep_init(&opt, the_repository);
-	git_config(grep_cmd_config, &opt);
+	repo_config(the_repository, grep_cmd_config, &opt);
 
 	/*
 	 * If there is no -- then the paths must exist in the working
@@ -1047,12 +1187,12 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 
 	if (use_index && !startup_info->have_repository) {
 		int fallback = 0;
-		git_config_get_bool("grep.fallbacktonoindex", &fallback);
+		repo_config_get_bool(the_repository, "grep.fallbacktonoindex", &fallback);
 		if (fallback)
 			use_index = 0;
 		else
 			/* die the same way as if we did it at the beginning */
-			setup_git_directory();
+			setup_git_directory(the_repository);
 	}
 	/* Ignore --recurse-submodules if --no-index is given or implied */
 	if (!use_index)
@@ -1077,9 +1217,9 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	}
 
 	if (show_in_pager == default_pager)
-		show_in_pager = git_pager(1);
+		show_in_pager = git_pager(the_repository, 1);
 	if (show_in_pager) {
-		opt.color = 0;
+		opt.color = GIT_COLOR_NEVER;
 		opt.name_only = 1;
 		opt.null_following_name = 1;
 		opt.output_priv = &path_list;
@@ -1114,7 +1254,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	for (i = 0; i < argc; i++) {
 		const char *arg = argv[i];
 		struct object_id oid;
-		struct object_context oc;
+		struct object_context oc = {0};
 		struct object *object;
 
 		if (!strcmp(arg, "--")) {
@@ -1133,14 +1273,15 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 					 &oid, &oc)) {
 			if (seen_dashdash)
 				die(_("unable to resolve revision: %s"), arg);
+			object_context_release(&oc);
 			break;
 		}
 
-		object = parse_object_or_die(&oid, arg);
+		object = parse_object_or_die(the_repository, &oid, arg);
 		if (!seen_dashdash)
-			verify_non_filename(prefix, arg);
+			verify_non_filename(the_repository, prefix, arg);
 		add_object_array_with_path(object, arg, &list, oc.mode, oc.path);
-		free(oc.path);
+		object_context_release(&oc);
 	}
 
 	/*
@@ -1150,7 +1291,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	if (!seen_dashdash) {
 		int j;
 		for (j = i; j < argc; j++)
-			verify_filename(prefix, argv[j], j == i && allow_revs);
+			verify_filename(the_repository, prefix, argv[j], j == i && allow_revs);
 	}
 
 	parse_pathspec(&pathspec, 0,
@@ -1168,8 +1309,10 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	 * Optimize out the case where the amount of matches is limited to zero.
 	 * We do this to keep results consistent with GNU grep(1).
 	 */
-	if (opt.max_count == 0)
-		return 1;
+	if (opt.max_count == 0) {
+		ret = 1;
+		goto out;
+	}
 
 	if (show_in_pager) {
 		if (num_threads > 1)
@@ -1198,8 +1341,9 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 		 */
 		if (recurse_submodules)
 			repo_read_gitmodules(the_repository, 1);
+
 		if (startup_info->have_repository)
-			(void)get_packed_git(the_repository);
+			odb_prepare(the_repository->objects, 0);
 
 		start_threads(&opt);
 	} else {
@@ -1236,7 +1380,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 	}
 
 	if (!show_in_pager && !opt.status_only)
-		setup_pager();
+		setup_pager(the_repository);
 
 	die_for_incompatible_opt3(!use_index, "--no-index",
 				  untracked, "--untracked",
@@ -1249,7 +1393,7 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 		die(_("--[no-]exclude-standard cannot be used for tracked contents"));
 	} else if (!list.nr) {
 		if (!cached)
-			setup_work_tree();
+			setup_work_tree(the_repository);
 
 		hit = grep_cache(&opt, &pathspec, cached);
 	} else {
@@ -1263,10 +1407,14 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 		hit |= wait_all();
 	if (hit && show_in_pager)
 		run_pager(&opt, prefix);
+
+	ret = !hit;
+
+out:
 	clear_pathspec(&pathspec);
 	string_list_clear(&path_list, 0);
 	free_grep_patterns(&opt);
 	object_array_clear(&list);
 	free_repos();
-	return !hit;
+	return ret;
 }

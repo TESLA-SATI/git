@@ -6,6 +6,9 @@
  * Based on git-tag.sh and mktag.c by Linus Torvalds.
  */
 
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "advice.h"
 #include "config.h"
@@ -14,8 +17,9 @@
 #include "gettext.h"
 #include "hex.h"
 #include "refs.h"
+#include "object-file.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "path.h"
 #include "tag.h"
 #include "parse-options.h"
@@ -28,9 +32,11 @@
 #include "date.h"
 #include "write-or-die.h"
 #include "object-file-convert.h"
+#include "trailer.h"
 
 static const char * const git_tag_usage[] = {
 	N_("git tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>] [-e]\n"
+	   "        [(--trailer <token>[(=|:)<value>])...]\n"
 	   "        <tagname> [<commit> | <object>]"),
 	N_("git tag -d <tagname>..."),
 	N_("git tag [-n[<num>]] -l [--contains <commit>] [--no-contains <commit>]\n"
@@ -87,7 +93,7 @@ static int for_each_tag_name(const char **argv, each_tag_name_fn fn,
 	for (p = argv; *p; p++) {
 		strbuf_reset(&ref);
 		strbuf_addf(&ref, "refs/tags/%s", *p);
-		if (read_ref(ref.buf, &oid)) {
+		if (refs_read_ref(get_main_ref_store(the_repository), ref.buf, &oid)) {
 			error(_("tag '%s' not found."), *p);
 			had_error = 1;
 			continue;
@@ -116,13 +122,13 @@ static int delete_tags(const char **argv)
 	struct string_list_item *item;
 
 	result = for_each_tag_name(argv, collect_tags, (void *)&refs_to_delete);
-	if (delete_refs(NULL, &refs_to_delete, REF_NO_DEREF))
+	if (refs_delete_refs(get_main_ref_store(the_repository), NULL, &refs_to_delete, REF_NO_DEREF))
 		result = 1;
 
 	for_each_string_list_item(item, &refs_to_delete) {
 		const char *name = item->string;
 		struct object_id *oid = item->util;
-		if (!ref_exists(name))
+		if (!refs_ref_exists(get_main_ref_store(the_repository), name))
 			printf(_("Deleted tag '%s' (was %s)\n"),
 				item->string + 10,
 				repo_find_unique_abbrev(the_repository, oid, DEFAULT_ABBREV));
@@ -143,11 +149,11 @@ static int verify_tag(const char *name, const char *ref UNUSED,
 	if (format->format)
 		flags = GPG_VERIFY_OMIT_STATUS;
 
-	if (gpg_verify_tag(oid, name, flags))
+	if (gpg_verify_tag(the_repository, oid, name, flags))
 		return -1;
 
 	if (format->format)
-		pretty_print_ref(name, oid, format);
+		pretty_print_ref(name, oid, NULL, format);
 
 	return 0;
 }
@@ -158,19 +164,19 @@ static int do_sign(struct strbuf *buffer, struct object_id **compat_oid,
 	const struct git_hash_algo *compat = the_repository->compat_hash_algo;
 	struct strbuf sig = STRBUF_INIT, compat_sig = STRBUF_INIT;
 	struct strbuf compat_buf = STRBUF_INIT;
-	const char *keyid = get_signing_key();
+	char *keyid = get_signing_key();
 	int ret = -1;
 
-	if (sign_buffer(buffer, &sig, keyid))
-		return -1;
+	if (sign_buffer(buffer, &sig, keyid, 0))
+		goto out;
 
 	if (compat) {
 		const struct git_hash_algo *algo = the_repository->hash_algo;
 
-		if (convert_object_file(&compat_buf, algo, compat,
+		if (convert_object_file(the_repository ,&compat_buf, algo, compat,
 					buffer->buf, buffer->len, OBJ_TAG, 1))
 			goto out;
-		if (sign_buffer(&compat_buf, &compat_sig, keyid))
+		if (sign_buffer(&compat_buf, &compat_sig, keyid, 0))
 			goto out;
 		add_header_signature(&compat_buf, &sig, algo);
 		strbuf_addbuf(&compat_buf, &compat_sig);
@@ -188,6 +194,7 @@ out:
 	strbuf_release(&sig);
 	strbuf_release(&compat_sig);
 	strbuf_release(&compat_buf);
+	free(keyid);
 	return ret;
 }
 
@@ -231,13 +238,13 @@ static int git_tag_config(const char *var, const char *value,
 
 static void write_tag_body(int fd, const struct object_id *oid)
 {
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 	char *buf, *sp, *orig;
 	struct strbuf payload = STRBUF_INIT;
 	struct strbuf signature = STRBUF_INIT;
 
-	orig = buf = repo_read_object_file(the_repository, oid, &type, &size);
+	orig = buf = odb_read_object(the_repository->objects, oid, &type, &size);
 	if (!buf)
 		return;
 	if (parse_signature(buf, size, &payload, &signature)) {
@@ -264,8 +271,8 @@ static int build_tag_object(struct strbuf *buf, int sign, struct object_id *resu
 	struct object_id *compat_oid = NULL, compat_oid_buf;
 	if (sign && do_sign(buf, &compat_oid, &compat_oid_buf) < 0)
 		return error(_("unable to sign the tag"));
-	if (write_object_file_flags(buf->buf, buf->len, OBJ_TAG, result,
-				    compat_oid, 0) < 0)
+	if (odb_write_object_ext(the_repository->objects, buf->buf,
+				 buf->len, OBJ_TAG, result, compat_oid, 0) < 0)
 		return error(_("unable to write tag file"));
 	return 0;
 }
@@ -290,12 +297,14 @@ static const char message_advice_nested_tag[] =
 static void create_tag(const struct object_id *object, const char *object_ref,
 		       const char *tag,
 		       struct strbuf *buf, struct create_tag_options *opt,
-		       struct object_id *prev, struct object_id *result, char *path)
+		       struct object_id *prev, struct object_id *result,
+		       struct strvec *trailer_args, char *path)
 {
 	enum object_type type;
 	struct strbuf header = STRBUF_INIT;
+	int should_edit;
 
-	type = oid_object_info(the_repository, object, NULL);
+	type = odb_read_object_info(the_repository->objects, object, NULL);
 	if (type <= OBJ_NONE)
 		die(_("bad object type."));
 
@@ -313,13 +322,15 @@ static void create_tag(const struct object_id *object, const char *object_ref,
 		    tag,
 		    git_committer_info(IDENT_STRICT));
 
-	if (!opt->message_given || opt->use_editor) {
+	should_edit = opt->use_editor || !opt->message_given;
+	if (should_edit || trailer_args->nr) {
 		int fd;
 
 		/* write the template message before editing: */
 		fd = xopen(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 
-		if (opt->message_given) {
+		if (opt->message_given && buf->len) {
+			strbuf_complete(buf, '\n');
 			write_or_die(fd, buf->buf, buf->len);
 			strbuf_reset(buf);
 		} else if (!is_null_oid(prev)) {
@@ -338,10 +349,19 @@ static void create_tag(const struct object_id *object, const char *object_ref,
 		}
 		close(fd);
 
-		if (launch_editor(path, buf, NULL)) {
-			fprintf(stderr,
-			_("Please supply the message using either -m or -F option.\n"));
-			exit(1);
+		if (trailer_args->nr && amend_file_with_trailers(path, trailer_args))
+			die(_("unable to pass trailers to --trailers"));
+
+		if (should_edit) {
+			if (launch_editor(path, buf, NULL)) {
+				fprintf(stderr,
+					_("Please supply the message using either -m or -F option.\n"));
+				exit(1);
+			}
+		} else if (trailer_args->nr) {
+			strbuf_reset(buf);
+			if (strbuf_read_file(buf, path, 0) < 0)
+				die_errno(_("failed to read '%s'"), path);
 		}
 	}
 
@@ -368,7 +388,7 @@ static void create_reflog_msg(const struct object_id *oid, struct strbuf *sb)
 	enum object_type type;
 	struct commit *c;
 	char *buf;
-	unsigned long size;
+	size_t size;
 	int subject_len = 0;
 	const char *subject_start;
 
@@ -381,13 +401,13 @@ static void create_reflog_msg(const struct object_id *oid, struct strbuf *sb)
 	}
 
 	strbuf_addstr(sb, " (");
-	type = oid_object_info(the_repository, oid, NULL);
+	type = odb_read_object_info(the_repository->objects, oid, NULL);
 	switch (type) {
 	default:
 		strbuf_addstr(sb, "object of unknown type");
 		break;
 	case OBJ_COMMIT:
-		if ((buf = repo_read_object_file(the_repository, oid, &type, &size))) {
+		if ((buf = odb_read_object(the_repository->objects, oid, &type, &size))) {
 			subject_len = find_commit_subject(buf, &subject_start);
 			strbuf_insert(sb, sb->len, subject_start, subject_len);
 		} else {
@@ -431,18 +451,10 @@ static int parse_msg_arg(const struct option *opt, const char *arg, int unset)
 	return 0;
 }
 
-static int strbuf_check_tag_ref(struct strbuf *sb, const char *name)
-{
-	if (name[0] == '-')
-		return -1;
-
-	strbuf_reset(sb);
-	strbuf_addf(sb, "refs/tags/%s", name);
-
-	return check_refname_format(sb->buf, 0);
-}
-
-int cmd_tag(int argc, const char **argv, const char *prefix)
+int cmd_tag(int argc,
+	    const char **argv,
+	    const char *prefix,
+	    struct repository *repo UNUSED)
 {
 	struct strbuf buf = STRBUF_INIT;
 	struct strbuf ref = STRBUF_INIT;
@@ -463,13 +475,21 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	struct ref_sorting *sorting;
 	struct string_list sorting_options = STRING_LIST_INIT_DUP;
 	struct ref_format format = REF_FORMAT_INIT;
+	struct strvec trailer_args = STRVEC_INIT;
 	int icase = 0;
 	int edit_flag = 0;
 	struct option options[] = {
 		OPT_CMDMODE('l', "list", &cmdmode, N_("list tag names"), 'l'),
-		{ OPTION_INTEGER, 'n', NULL, &filter.lines, N_("n"),
-				N_("print <n> lines of each tag message"),
-				PARSE_OPT_OPTARG, NULL, 1 },
+		{
+			.type = OPTION_INTEGER,
+			.short_name = 'n',
+			.value = &filter.lines,
+			.precision = sizeof(filter.lines),
+			.argh = N_("n"),
+			.help = N_("print <n> lines of each tag message"),
+			.flags = PARSE_OPT_OPTARG,
+			.defval = 1,
+		},
 		OPT_CMDMODE('d', "delete", &cmdmode, N_("delete tags"), 'd'),
 		OPT_CMDMODE('v', "verify", &cmdmode, N_("verify tags"), 'v'),
 
@@ -479,6 +499,8 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		OPT_CALLBACK_F('m', "message", &msg, N_("message"),
 			       N_("tag message"), PARSE_OPT_NONEG, parse_msg_arg),
 		OPT_FILENAME('F', "file", &msgfile, N_("read message from file")),
+		OPT_STRVEC(0, "trailer", &trailer_args, N_("trailer"),
+			   N_("add custom trailer(s)")),
 		OPT_BOOL('e', "edit", &edit_flag, N_("force edit of tag message")),
 		OPT_BOOL('s', "sign", &opt.sign, N_("annotated and GPG-signed tag")),
 		OPT_CLEANUP(&cleanup_arg),
@@ -499,9 +521,14 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 			N_("do not output a newline after empty formatted refs")),
 		OPT_REF_SORT(&sorting_options),
 		{
-			OPTION_CALLBACK, 0, "points-at", &filter.points_at, N_("object"),
-			N_("print only tags of the object"), PARSE_OPT_LASTARG_DEFAULT,
-			parse_opt_object_name, (intptr_t) "HEAD"
+			.type = OPTION_CALLBACK,
+			.long_name = "points-at",
+			.value = &filter.points_at,
+			.argh = N_("object"),
+			.help = N_("print only tags of the object"),
+			.flags = PARSE_OPT_LASTARG_DEFAULT,
+			.callback = parse_opt_object_name,
+			.defval = (intptr_t) "HEAD",
 		},
 		OPT_STRING(  0 , "format", &format.format, N_("format"),
 			   N_("format to use for the output")),
@@ -519,7 +546,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	 * Try to set sort keys from config. If config does not set any,
 	 * fall back on default (refname) sorting.
 	 */
-	git_config(git_tag_config, &sorting_options);
+	repo_config(the_repository, git_tag_config, &sorting_options);
 	if (!sorting_options.nr)
 		string_list_append(&sorting_options, "refname");
 
@@ -541,6 +568,9 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	if (cmdmode == 'l')
 		setup_auto_pager("tag", 1);
 
+	if (trailer_args.nr)
+		trailer_config_init();
+
 	if (opt.sign == -1)
 		opt.sign = cmdmode ? 0 : config_sign_tag > 0;
 
@@ -548,7 +578,8 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		opt.sign = 1;
 		set_signing_key(keyid);
 	}
-	create_tag_object = (opt.sign || annotate || msg.given || msgfile);
+	create_tag_object = (opt.sign || annotate || msg.given || msgfile ||
+			     edit_flag || trailer_args.nr);
 
 	if ((create_tag_object || force) && (cmdmode != 0))
 		usage_with_options(git_tag_usage, options);
@@ -627,11 +658,11 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	if (repo_get_oid(the_repository, object_ref, &object))
 		die(_("Failed to resolve '%s' as a valid ref."), object_ref);
 
-	if (strbuf_check_tag_ref(&ref, tag))
+	if (check_tag_ref(&ref, tag))
 		die(_("'%s' is not a valid tag name."), tag);
 
-	if (read_ref(ref.buf, &prev))
-		oidclr(&prev);
+	if (refs_read_ref(get_main_ref_store(the_repository), ref.buf, &prev))
+		oidclr(&prev, the_repository->hash_algo);
 	else if (!force)
 		die(_("tag '%s' already exists"), tag);
 
@@ -652,14 +683,16 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	if (create_tag_object) {
 		if (force_sign_annotate && !annotate)
 			opt.sign = 1;
-		path = git_pathdup("TAG_EDITMSG");
+		path = repo_git_path(the_repository, "TAG_EDITMSG");
 		create_tag(&object, object_ref, tag, &buf, &opt, &prev, &object,
-			   path);
+			   &trailer_args, path);
 	}
 
-	transaction = ref_transaction_begin(&err);
+	transaction = ref_store_transaction_begin(get_main_ref_store(the_repository),
+						  0, &err);
 	if (!transaction ||
 	    ref_transaction_update(transaction, ref.buf, &object, &prev,
+				   NULL, NULL,
 				   create_reflog ? REF_FORCE_CREATE_REFLOG : 0,
 				   reflog_msg.buf, &err) ||
 	    ref_transaction_commit(transaction, &err)) {
@@ -686,6 +719,7 @@ cleanup:
 	strbuf_release(&reflog_msg);
 	strbuf_release(&msg.buf);
 	strbuf_release(&err);
+	strvec_clear(&trailer_args);
 	free(msgfile);
 	return ret;
 }

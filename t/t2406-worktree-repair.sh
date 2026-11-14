@@ -2,7 +2,6 @@
 
 test_description='test git worktree repair'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -195,6 +194,94 @@ test_expect_success 'repair moved main and linked worktrees' '
 	git -C mainmoved worktree repair ../sidemoved &&
 	test_cmp expect-gitdir mainmoved/.git/worktrees/side/gitdir &&
 	test_cmp expect-gitfile sidemoved/.git
+'
+
+test_expect_success 'repair copied main and linked worktrees' '
+	test_when_finished "rm -rf orig dup" &&
+	mkdir -p orig &&
+	git -C orig init main &&
+	test_commit -C orig/main nothing &&
+	git -C orig/main worktree add ../linked &&
+	cp orig/main/.git/worktrees/linked/gitdir orig/main.expect &&
+	cp orig/linked/.git orig/linked.expect &&
+	cp -R orig dup &&
+	sed "s,orig/linked/\.git$,dup/linked/.git," orig/main.expect >dup/main.expect &&
+	sed "s,orig/main/\.git/worktrees/linked$,dup/main/.git/worktrees/linked," \
+		orig/linked.expect >dup/linked.expect &&
+	git -C dup/main worktree repair ../linked &&
+	test_cmp orig/main.expect orig/main/.git/worktrees/linked/gitdir &&
+	test_cmp orig/linked.expect orig/linked/.git &&
+	test_cmp dup/main.expect dup/main/.git/worktrees/linked/gitdir &&
+	test_cmp dup/linked.expect dup/linked/.git
+'
+
+test_expect_success 'repair worktree with relative path with missing gitfile' '
+	test_when_finished "rm -rf main wt" &&
+	test_create_repo main &&
+	git -C main config worktree.useRelativePaths true &&
+	test_commit -C main init &&
+	git -C main worktree add --detach ../wt &&
+	rm wt/.git &&
+	test_path_is_missing wt/.git &&
+	git -C main worktree repair &&
+	echo "gitdir: ../main/.git/worktrees/wt" >expect &&
+	test_cmp expect wt/.git
+'
+
+test_expect_success 'repair absolute to relative from side worktree' '
+	test_when_finished "rm -rf main side" &&
+	test_create_repo main &&
+	test_commit -C main init &&
+	git -C main worktree add --detach ../side &&
+	echo "../../../../side/.git" >expect-gitdir &&
+	echo "gitdir: ../main/.git/worktrees/side" >expect-gitfile &&
+	git -C main worktree repair --relative-paths ../side 2>main/err &&
+	test_grep "gitdir absolute/relative path mismatch" main/err &&
+	test_cmp expect-gitdir main/.git/worktrees/side/gitdir &&
+	test_cmp expect-gitfile side/.git
+'
+
+test_expect_success 'repair relative to absolute from side worktree' '
+	test_when_finished "rm -rf main side" &&
+	test_create_repo main &&
+	test_commit -C main init &&
+	git -C main worktree add --relative-paths --detach ../side &&
+	echo "$(pwd)/side/.git" >expect-gitdir &&
+	echo "gitdir: $(pwd)/main/.git/worktrees/side" >expect-gitfile &&
+	git -C main worktree repair ../side 2>main/err &&
+	test_grep "gitdir absolute/relative path mismatch" main/err &&
+	test_cmp expect-gitdir main/.git/worktrees/side/gitdir &&
+	test_cmp expect-gitfile side/.git
+'
+
+test_expect_success 'repair absolute to relative from main worktree' '
+	test_when_finished "rm -rf main side" &&
+	test_create_repo main &&
+	git -C main config worktree.useRelativePaths false &&
+	test_commit -C main init &&
+	git -C main worktree add --detach ../side &&
+	echo "../../../../side/.git" >expect-gitdir &&
+	echo "gitdir: ../main/.git/worktrees/side" >expect-gitfile &&
+	git -C main config worktree.useRelativePaths true &&
+	git -C main worktree repair 2>main/err &&
+	test_grep ".git file absolute/relative path mismatch" main/err &&
+	test_cmp expect-gitdir main/.git/worktrees/side/gitdir &&
+	test_cmp expect-gitfile side/.git
+'
+
+test_expect_success 'repair relative to absolute from main worktree' '
+	test_when_finished "rm -rf main side" &&
+	test_create_repo main &&
+	git -C main config worktree.useRelativePaths true &&
+	test_commit -C main init &&
+	git -C main worktree add --detach ../side &&
+	echo "$(pwd)/side/.git" >expect-gitdir &&
+	echo "gitdir: $(pwd)/main/.git/worktrees/side" >expect-gitfile &&
+	git -C main config worktree.useRelativePaths false &&
+	git -C main worktree repair 2>main/err &&
+	test_grep ".git file absolute/relative path mismatch" main/err &&
+	test_cmp expect-gitdir main/.git/worktrees/side/gitdir &&
+	test_cmp expect-gitfile side/.git
 '
 
 test_done

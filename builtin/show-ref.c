@@ -1,18 +1,20 @@
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
+#include "environment.h"
 #include "gettext.h"
 #include "hex.h"
 #include "refs/refs-internal.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "object.h"
 #include "string-list.h"
 #include "parse-options.h"
 
 static const char * const show_ref_usage[] = {
 	N_("git show-ref [--head] [-d | --dereference]\n"
-	   "             [-s | --hash[=<n>]] [--abbrev[=<n>]] [--tags]\n"
-	   "             [--heads] [--] [<pattern>...]"),
+	   "             [-s | --hash[=<n>]] [--abbrev[=<n>]] [--branches] [--tags]\n"
+	   "             [--] [<pattern>...]"),
 	N_("git show-ref --verify [-q | --quiet] [-d | --dereference]\n"
 	   "             [-s | --hash[=<n>]] [--abbrev[=<n>]]\n"
 	   "             [--] [<ref>...]"),
@@ -29,30 +31,31 @@ struct show_one_options {
 };
 
 static void show_one(const struct show_one_options *opts,
-		     const char *refname, const struct object_id *oid)
+		     const struct reference *ref)
 {
 	const char *hex;
 	struct object_id peeled;
 
-	if (!repo_has_object_file(the_repository, oid))
-		die("git show-ref: bad ref %s (%s)", refname,
-		    oid_to_hex(oid));
+	if (!odb_has_object(the_repository->objects, ref->oid,
+			    ODB_HAS_OBJECT_RECHECK_PACKED | ODB_HAS_OBJECT_FETCH_PROMISOR))
+		die("git show-ref: bad ref %s (%s)", ref->name,
+		    oid_to_hex(ref->oid));
 
 	if (opts->quiet)
 		return;
 
-	hex = repo_find_unique_abbrev(the_repository, oid, opts->abbrev);
+	hex = repo_find_unique_abbrev(the_repository, ref->oid, opts->abbrev);
 	if (opts->hash_only)
 		printf("%s\n", hex);
 	else
-		printf("%s %s\n", hex, refname);
+		printf("%s %s\n", hex, ref->name);
 
 	if (!opts->deref_tags)
 		return;
 
-	if (!peel_iterated_oid(oid, &peeled)) {
+	if (!reference_get_peeled_oid(the_repository, ref, &peeled)) {
 		hex = repo_find_unique_abbrev(the_repository, &peeled, opts->abbrev);
-		printf("%s %s^{}\n", hex, refname);
+		printf("%s %s^{}\n", hex, ref->name);
 	}
 }
 
@@ -63,26 +66,25 @@ struct show_ref_data {
 	int show_head;
 };
 
-static int show_ref(const char *refname, const struct object_id *oid,
-		    int flag UNUSED, void *cbdata)
+static int show_ref(const struct reference *ref, void *cbdata)
 {
 	struct show_ref_data *data = cbdata;
 
-	if (data->show_head && !strcmp(refname, "HEAD"))
+	if (data->show_head && !strcmp(ref->name, "HEAD"))
 		goto match;
 
 	if (data->patterns) {
-		int reflen = strlen(refname);
+		int reflen = strlen(ref->name);
 		const char **p = data->patterns, *m;
 		while ((m = *p++) != NULL) {
 			int len = strlen(m);
 			if (len > reflen)
 				continue;
-			if (memcmp(m, refname + reflen - len, len))
+			if (memcmp(m, ref->name + reflen - len, len))
 				continue;
 			if (len == reflen)
 				goto match;
-			if (refname[reflen - len - 1] == '/')
+			if (ref->name[reflen - len - 1] == '/')
 				goto match;
 		}
 		return 0;
@@ -91,17 +93,15 @@ static int show_ref(const char *refname, const struct object_id *oid,
 match:
 	data->found_match++;
 
-	show_one(data->show_one_opts, refname, oid);
+	show_one(data->show_one_opts, ref);
 
 	return 0;
 }
 
-static int add_existing(const char *refname,
-			const struct object_id *oid UNUSED,
-			int flag UNUSED, void *cbdata)
+static int add_existing(const struct reference *ref, void *cbdata)
 {
 	struct string_list *list = (struct string_list *)cbdata;
-	string_list_insert(list, refname);
+	string_list_insert(list, ref->name);
 	return 0;
 }
 
@@ -129,7 +129,8 @@ static int cmd_show_ref__exclude_existing(const struct exclude_existing_options 
 	char buf[1024];
 	int patternlen = opts->pattern ? strlen(opts->pattern) : 0;
 
-	for_each_ref(add_existing, &existing_refs);
+	refs_for_each_ref(get_main_ref_store(the_repository), add_existing,
+			  &existing_refs);
 	while (fgets(buf, sizeof(buf), stdin)) {
 		char *ref;
 		int len = strlen(buf);
@@ -173,13 +174,19 @@ static int cmd_show_ref__verify(const struct show_one_options *show_one_opts,
 		struct object_id oid;
 
 		if ((starts_with(*refs, "refs/") || refname_is_safe(*refs)) &&
-		    !read_ref(*refs, &oid)) {
-			show_one(show_one_opts, *refs, &oid);
-		}
-		else if (!show_one_opts->quiet)
+		    !refs_read_ref(get_main_ref_store(the_repository), *refs, &oid)) {
+			struct reference ref = {
+				.name = *refs,
+				.oid = &oid,
+			};
+
+			show_one(show_one_opts, &ref);
+		} else if (!show_one_opts->quiet) {
 			die("'%s' - not a valid ref", *refs);
-		else
+		} else {
 			return 1;
+		}
+
 		refs++;
 	}
 
@@ -188,7 +195,7 @@ static int cmd_show_ref__verify(const struct show_one_options *show_one_opts,
 
 struct patterns_options {
 	int show_head;
-	int heads_only;
+	int branches_only;
 	int tags_only;
 };
 
@@ -205,14 +212,25 @@ static int cmd_show_ref__patterns(const struct patterns_options *opts,
 		show_ref_data.patterns = patterns;
 
 	if (opts->show_head)
-		head_ref(show_ref, &show_ref_data);
-	if (opts->heads_only || opts->tags_only) {
-		if (opts->heads_only)
-			for_each_fullref_in("refs/heads/", show_ref, &show_ref_data);
-		if (opts->tags_only)
-			for_each_fullref_in("refs/tags/", show_ref, &show_ref_data);
+		refs_head_ref(get_main_ref_store(the_repository), show_ref,
+			      &show_ref_data);
+	if (opts->branches_only || opts->tags_only) {
+		struct refs_for_each_ref_options for_each_ref_opts = { 0 };
+
+		if (opts->branches_only) {
+			for_each_ref_opts.prefix = "refs/heads/";
+			refs_for_each_ref_ext(get_main_ref_store(the_repository),
+					      show_ref, &show_ref_data, &for_each_ref_opts);
+		}
+
+		if (opts->tags_only) {
+			for_each_ref_opts.prefix = "refs/tags/";
+			refs_for_each_ref_ext(get_main_ref_store(the_repository),
+					      show_ref, &show_ref_data, &for_each_ref_opts);
+		}
 	} else {
-		for_each_ref(show_ref, &show_ref_data);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  show_ref, &show_ref_data);
 	}
 	if (!show_ref_data.found_match)
 		return 1;
@@ -279,15 +297,20 @@ static int exclude_existing_callback(const struct option *opt, const char *arg,
 	return 0;
 }
 
-int cmd_show_ref(int argc, const char **argv, const char *prefix)
+int cmd_show_ref(int argc,
+const char **argv,
+const char *prefix,
+struct repository *repo UNUSED)
 {
 	struct exclude_existing_options exclude_existing_opts = {0};
 	struct patterns_options patterns_opts = {0};
 	struct show_one_options show_one_opts = {0};
 	int verify = 0, exists = 0;
 	const struct option show_ref_options[] = {
-		OPT_BOOL(0, "tags", &patterns_opts.tags_only, N_("only show tags (can be combined with heads)")),
-		OPT_BOOL(0, "heads", &patterns_opts.heads_only, N_("only show heads (can be combined with tags)")),
+		OPT_BOOL(0, "tags", &patterns_opts.tags_only, N_("only show tags (can be combined with --branches)")),
+		OPT_BOOL(0, "branches", &patterns_opts.branches_only, N_("only show branches (can be combined with --tags)")),
+		OPT_HIDDEN_BOOL(0, "heads", &patterns_opts.branches_only,
+				N_("deprecated synonym for --branches")),
 		OPT_BOOL(0, "exists", &exists, N_("check for reference existence without resolving")),
 		OPT_BOOL(0, "verify", &verify, N_("stricter reference checking, "
 			    "requires exact ref path")),
@@ -309,7 +332,7 @@ int cmd_show_ref(int argc, const char **argv, const char *prefix)
 		OPT_END()
 	};
 
-	git_config(git_default_config, NULL);
+	repo_config(the_repository, git_default_config, NULL);
 
 	argc = parse_options(argc, argv, prefix, show_ref_options,
 			     show_ref_usage, 0);

@@ -7,7 +7,6 @@ test_description='Test prune and reflog expiration'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 check_have () {
@@ -108,13 +107,13 @@ test_expect_success setup '
 '
 
 test_expect_success 'correct usage on sub-command -h' '
-	test_expect_code 129 git reflog expire -h >err &&
-	grep "git reflog expire" err
+	git reflog expire -h >err &&
+	test_grep "git reflog expire" err
 '
 
 test_expect_success 'correct usage on "git reflog show -h"' '
-	test_expect_code 129 git reflog show -h >err &&
-	grep -F "git reflog [show]" err
+	git reflog show -h >err &&
+	test_grep -F "git reflog [show]" err
 '
 
 test_expect_success 'pass through -- to sub-command' '
@@ -131,10 +130,10 @@ test_expect_success 'pass through -- to sub-command' '
 
 test_expect_success rewind '
 	test_tick && git reset --hard HEAD~2 &&
-	test -f C &&
-	test -f A/B/E &&
-	! test -f F &&
-	! test -f A/G &&
+	test_path_is_file C &&
+	test_path_is_file A/B/E &&
+	test_path_is_missing F &&
+	test_path_is_missing A/G &&
 
 	check_have A B C D E F G H I J K L &&
 
@@ -144,6 +143,80 @@ test_expect_success rewind '
 
 	git reflog refs/heads/main >output &&
 	test_line_count = 5 output
+'
+
+test_expect_success 'reflog expire should not barf on an annotated tag' '
+	test_when_finished "git tag -d v0.tag || :" &&
+	git -c core.logAllRefUpdates=always \
+		tag -a -m "tag name" v0.tag main &&
+	git reflog expire --dry-run refs/tags/v0.tag 2>err &&
+	test_grep ! "error: [Oo]bject .* not a commit" err
+'
+
+test_expect_success 'reflog expire keeps reachable entries for 90 days' '
+	test_when_finished "rm -rf reachable-keep" &&
+	git init reachable-keep &&
+	(
+		cd reachable-keep &&
+		timestamp=$(test-tool date timestamp "60.days.ago") &&
+		timestamp=${timestamp#* -> } &&
+		test_commit --no-tag --date "$timestamp +0000" old &&
+		git reflog expire --all &&
+		test_stdout_line_count = 1 git reflog refs/heads/main
+	)
+'
+
+test_expect_success 'reflog expire removes reachable entries after 90 days' '
+	test_when_finished "rm -rf reachable-expire" &&
+	git init reachable-expire &&
+	(
+		cd reachable-expire &&
+		timestamp=$(test-tool date timestamp "100.days.ago") &&
+		timestamp=${timestamp#* -> } &&
+		test_commit --no-tag --date "$timestamp +0000" old &&
+		git reflog expire --all &&
+		test_stdout_line_count = 0 git reflog refs/heads/main
+	)
+'
+
+test_expect_success 'reflog expire keeps unreachable entries for 30 days' '
+	test_when_finished "rm -rf unreachable-keep" &&
+	git init unreachable-keep &&
+	(
+		cd unreachable-keep &&
+		test_commit --no-tag base &&
+		base=$(git rev-parse HEAD) &&
+		timestamp=$(test-tool date timestamp "20.days.ago") &&
+		timestamp=${timestamp#* -> } &&
+		test_commit --no-tag --date "$timestamp +0000" old &&
+		old=$(git rev-parse HEAD) &&
+		git update-ref refs/heads/main "$base" &&
+		git rev-list --all --objects >reachable &&
+		test_grep ! "$old" reachable &&
+		git reflog expire --all &&
+		git reflog --format='%H' refs/heads/main >actual &&
+		test_grep "$old" actual
+	)
+'
+
+test_expect_success 'reflog expire removes unreachable entries after 30 days' '
+	test_when_finished "rm -rf unreachable-expire" &&
+	git init unreachable-expire &&
+	(
+		cd unreachable-expire &&
+		test_commit --no-tag base &&
+		base=$(git rev-parse HEAD) &&
+		timestamp=$(test-tool date timestamp "40.days.ago") &&
+		timestamp=${timestamp#* -> } &&
+		test_commit --no-tag --date "$timestamp +0000" old &&
+		old=$(git rev-parse HEAD) &&
+		git update-ref refs/heads/main "$base" &&
+		git rev-list --all --objects >reachable &&
+		test_grep ! "$old" reachable &&
+		git reflog expire --all &&
+		git reflog --format='%H' refs/heads/main >actual &&
+		test_grep ! "$old" actual
+	)
 '
 
 test_expect_success 'corrupt and check' '
@@ -165,6 +238,40 @@ test_expect_success 'reflog expire --dry-run should not touch reflog' '
 	test_line_count = 5 output &&
 
 	check_fsck "missing blob $F"
+'
+
+# A dry run only ever says "keep" or "would prune".
+check_dry_run_output () {
+	test_grep "^would prune " "$1" &&
+	sed -e "/^keep /d" -e "/^would prune /d" \
+		-e "/^Marking reachable objects/d" "$1" >unexpected &&
+	test_must_be_empty unexpected
+}
+
+test_expect_success 'reflog expire --dry-run --verbose with a named ref' '
+	git reflog refs/heads/main >before &&
+	git reflog expire --dry-run --verbose \
+		--expire=$(($test_tick - 10000)) \
+		--expire-unreachable=$(($test_tick - 10000)) \
+		--stale-fix \
+		refs/heads/main >output &&
+	check_dry_run_output output &&
+
+	git reflog refs/heads/main >after &&
+	test_cmp before after
+'
+
+test_expect_success 'reflog expire --dry-run --verbose --all' '
+	git reflog refs/heads/main >before &&
+	git reflog expire --dry-run --verbose \
+		--expire=$(($test_tick - 10000)) \
+		--expire-unreachable=$(($test_tick - 10000)) \
+		--stale-fix \
+		--all >output &&
+	check_dry_run_output output &&
+
+	git reflog refs/heads/main >after &&
+	test_cmp before after
 '
 
 test_expect_success 'reflog expire' '
@@ -237,30 +344,22 @@ test_expect_success 'delete' '
 	test_tick &&
 	git commit -m tiger C &&
 
-	HEAD_entry_count=$(git reflog | wc -l) &&
-	main_entry_count=$(git reflog show main | wc -l) &&
-
-	test $HEAD_entry_count = 5 &&
-	test $main_entry_count = 5 &&
-
+	test_stdout_line_count = 5 git reflog &&
+	test_stdout_line_count = 5 git reflog show main &&
 
 	git reflog delete main@{1} &&
+	test_stdout_line_count = 4 git reflog show main &&
+	test_stdout_line_count = 5 git reflog &&
 	git reflog show main > output &&
-	test_line_count = $(($main_entry_count - 1)) output &&
-	test $HEAD_entry_count = $(git reflog | wc -l) &&
 	! grep ox < output &&
 
-	main_entry_count=$(wc -l < output) &&
-
 	git reflog delete HEAD@{1} &&
-	test $(($HEAD_entry_count -1)) = $(git reflog | wc -l) &&
-	test $main_entry_count = $(git reflog show main | wc -l) &&
-
-	HEAD_entry_count=$(git reflog | wc -l) &&
+	test_stdout_line_count = 4 git reflog &&
+	test_stdout_line_count = 4 git reflog show main &&
 
 	git reflog delete main@{07.04.2005.15:15:00.-0700} &&
+	test_stdout_line_count = 3 git reflog show main &&
 	git reflog show main > output &&
-	test_line_count = $(($main_entry_count - 1)) output &&
 	! grep dragon < output
 
 '
@@ -308,17 +407,17 @@ test_expect_success 'git reflog expire unknown reference' '
 	test_config gc.reflogexpireunreachable never &&
 
 	test_must_fail git reflog expire main@{123} 2>stderr &&
-	test_grep "points nowhere" stderr &&
+	test_grep "error: reflog could not be found: ${SQ}main@{123}${SQ}" stderr &&
 	test_must_fail git reflog expire does-not-exist 2>stderr &&
-	test_grep "points nowhere" stderr
+	test_grep "error: reflog could not be found: ${SQ}does-not-exist${SQ}" stderr
 '
 
 test_expect_success 'checkout should not delete log for packed ref' '
-	test $(git reflog main | wc -l) = 4 &&
+	test_stdout_line_count = 4 git reflog main &&
 	git branch foo &&
 	git pack-refs --all &&
 	git checkout foo &&
-	test $(git reflog main | wc -l) = 4
+	test_stdout_line_count = 4 git reflog main
 '
 
 test_expect_success 'stale dirs do not cause d/f conflicts (reflogs on)' '
@@ -542,6 +641,156 @@ test_expect_success 'reflog with invalid object ID can be listed' '
 		git reflog list >actual &&
 		test_cmp expect actual
 	)
+'
+
+test_expect_success 'reflog drop non-existent ref' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_must_fail git reflog exists refs/heads/non-existent &&
+		test_must_fail git reflog drop refs/heads/non-existent 2>stderr &&
+		test_grep "error: reflog could not be found: ${SQ}refs/heads/non-existent${SQ}" stderr
+	)
+'
+
+test_expect_success 'reflog drop' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		test_commit_bulk --ref=refs/heads/branch 1 &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch &&
+		git reflog drop refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch
+	)
+'
+
+test_expect_success 'reflog drop multiple references' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		test_commit_bulk --ref=refs/heads/branch 1 &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch &&
+		git reflog drop refs/heads/main refs/heads/branch &&
+		test_must_fail git reflog exists refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/branch
+	)
+'
+
+test_expect_success 'reflog drop multiple references some non-existent' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		test_commit_bulk --ref=refs/heads/branch 1 &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch &&
+		test_must_fail git reflog exists refs/heads/non-existent &&
+		test_must_fail git reflog drop refs/heads/main refs/heads/non-existent refs/heads/branch 2>stderr &&
+		test_must_fail git reflog exists refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/branch &&
+		test_must_fail git reflog exists refs/heads/non-existent &&
+		test_grep "error: reflog could not be found: ${SQ}refs/heads/non-existent${SQ}" stderr
+	)
+'
+
+test_expect_success 'reflog drop --all' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		test_commit_bulk --ref=refs/heads/branch 1 &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch &&
+		git reflog drop --all &&
+		test_must_fail git reflog exists refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/branch
+	)
+'
+
+test_expect_success 'reflog drop --all multiple worktrees' '
+	test_when_finished "rm -rf repo" &&
+	test_when_finished "rm -rf wt" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		git worktree add ../wt &&
+		test_commit_bulk -C ../wt --ref=refs/heads/branch 1 &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/branch &&
+		git reflog drop --all &&
+		test_must_fail git reflog exists refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/branch
+	)
+'
+
+test_expect_success 'reflog drop --all --single-worktree' '
+	test_when_finished "rm -rf repo" &&
+	test_when_finished "rm -rf wt" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		git worktree add ../wt &&
+		test_commit -C ../wt foobar &&
+		git reflog exists refs/heads/main &&
+		git reflog exists refs/heads/wt &&
+		test-tool ref-store worktree:wt reflog-exists HEAD &&
+		git reflog drop --all --single-worktree &&
+		test_must_fail git reflog exists refs/heads/main &&
+		test_must_fail git reflog exists refs/heads/wt &&
+		test_must_fail test-tool ref-store worktree:main reflog-exists HEAD &&
+		test-tool ref-store worktree:wt reflog-exists HEAD
+	)
+'
+
+test_expect_success 'reflog drop --all with reference' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		test_must_fail git reflog drop --all refs/heads/main 2>stderr &&
+		test_grep "usage: references specified along with --all" stderr
+	)
+'
+
+test_expect_success 'expire with pattern config' '
+	# Split refs/heads/ into two roots so we can apply config to each. Make
+	# two branches per root to verify that config is applied correctly
+	# multiple times.
+	git branch root1/branch1 &&
+	git branch root1/branch2 &&
+	git branch root2/branch1 &&
+	git branch root2/branch2 &&
+
+	test_config "gc.reflogexpire" "never" &&
+	test_config "gc.refs/heads/root2/*.reflogExpire" "now" &&
+	git reflog expire \
+		root1/branch1 root1/branch2 \
+		root2/branch1 root2/branch2 &&
+
+	cat >expect <<-\EOF &&
+	root1/branch1@{0}
+	root1/branch2@{0}
+	EOF
+	git log -g --branches="root*" --format=%gD >actual.raw &&
+	# The sole reflog entry of each branch points to the same commit, so
+	# the order in which they are shown is nondeterministic. We just care
+	# about the what was expired (and what was not), so sort to get a known
+	# order.
+	sort <actual.raw >actual.sorted &&
+	test_cmp expect actual.sorted
 '
 
 test_done

@@ -2,7 +2,6 @@
 
 test_description='checkout handling of ambiguous (branch/tag) refs'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup ambiguous refs' '
@@ -20,7 +19,7 @@ test_expect_success 'checkout ambiguous ref succeeds' '
 '
 
 test_expect_success 'checkout produces ambiguity warning' '
-	grep "warning.*ambiguous" stderr
+	test_grep "warning.*ambiguous" stderr
 '
 
 test_expect_success 'checkout chooses branch over tag' '
@@ -42,7 +41,7 @@ test_expect_success 'checkout vague ref succeeds' '
 '
 
 test_expect_success VAGUENESS_SUCCESS 'checkout produces ambiguity warning' '
-	grep "warning.*ambiguous" stderr
+	test_grep "warning.*ambiguous" stderr
 '
 
 test_expect_success VAGUENESS_SUCCESS 'checkout chooses branch over tag' '

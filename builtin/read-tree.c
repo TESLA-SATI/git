@@ -3,10 +3,10 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
-
-#define USE_THE_INDEX_VARIABLE
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
+#include "environment.h"
 #include "gettext.h"
 #include "hex.h"
 #include "lockfile.h"
@@ -17,7 +17,6 @@
 #include "cache-tree.h"
 #include "unpack-trees.h"
 #include "parse-options.h"
-#include "repository.h"
 #include "resolve-undo.h"
 #include "setup.h"
 #include "sparse-index.h"
@@ -33,7 +32,7 @@ static int list_tree(struct object_id *oid)
 
 	if (nr_trees >= MAX_UNPACK_TREES)
 		die("I cannot read more than %d trees", MAX_UNPACK_TREES);
-	tree = parse_tree_indirect(oid);
+	tree = repo_parse_tree_indirect(the_repository, oid);
 	if (!tree)
 		return -1;
 	trees[nr_trees++] = tree;
@@ -109,7 +108,10 @@ static int git_read_tree_config(const char *var, const char *value,
 	return git_default_config(var, value, ctx, cb);
 }
 
-int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
+int cmd_read_tree(int argc,
+		  const char **argv,
+		  const char *cmd_prefix,
+		  struct repository *repo UNUSED)
 {
 	int i, stage = 0;
 	struct object_id oid;
@@ -134,9 +136,14 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			 N_("3-way merge in presence of adds and removes")),
 		OPT_BOOL(0, "reset", &opts.reset,
 			 N_("same as -m, but discard unmerged entries")),
-		{ OPTION_STRING, 0, "prefix", &opts.prefix, N_("<subdirectory>/"),
-		  N_("read the tree into the index under <subdirectory>/"),
-		  PARSE_OPT_NONEG },
+		{
+			.type = OPTION_STRING,
+			.long_name = "prefix",
+			.value = &opts.prefix,
+			.argh = N_("<subdirectory>/"),
+			.help = N_("read the tree into the index under <subdirectory>/"),
+			.flags = PARSE_OPT_NONEG,
+		},
 		OPT_BOOL('u', NULL, &opts.update,
 			 N_("update working tree with merge result")),
 		OPT_CALLBACK_F(0, "exclude-per-directory", &opts,
@@ -159,10 +166,10 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 
 	memset(&opts, 0, sizeof(opts));
 	opts.head_idx = -1;
-	opts.src_index = &the_index;
-	opts.dst_index = &the_index;
+	opts.src_index = the_repository->index;
+	opts.dst_index = the_repository->index;
 
-	git_config(git_read_tree_config, NULL);
+	repo_config(the_repository, git_read_tree_config, NULL);
 
 	argc = parse_options(argc, argv, cmd_prefix, read_tree_options,
 			     read_tree_usage, 0);
@@ -197,7 +204,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			die(_("You need to resolve your current index first"));
 		stage = opts.merge = 1;
 	}
-	resolve_undo_clear_index(&the_index);
+	resolve_undo_clear_index(the_repository->index);
 
 	for (i = 0; i < argc; i++) {
 		const char *arg = argv[i];
@@ -222,10 +229,10 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 		opts.preserve_ignored = 0;
 	/* otherwise, opts.preserve_ignored is irrelevant */
 	if (opts.merge && !opts.index_only)
-		setup_work_tree();
+		setup_work_tree(the_repository);
 
 	if (opts.skip_sparse_checkout)
-		ensure_full_index(&the_index);
+		ensure_full_index(the_repository->index);
 
 	if (opts.merge) {
 		switch (stage - 1) {
@@ -237,7 +244,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			break;
 		case 2:
 			opts.fn = twoway_merge;
-			opts.initial_checkout = is_index_unborn(&the_index);
+			opts.initial_checkout = is_index_unborn(the_repository->index);
 			break;
 		case 3:
 		default:
@@ -258,10 +265,10 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 	if (nr_trees == 1 && !opts.prefix)
 		opts.skip_cache_tree_update = 1;
 
-	cache_tree_free(&the_index.cache_tree);
+	cache_tree_free(&the_repository->index->cache_tree);
 	for (i = 0; i < nr_trees; i++) {
 		struct tree *tree = trees[i];
-		if (parse_tree(tree) < 0)
+		if (repo_parse_tree(the_repository, tree) < 0)
 			return 128;
 		init_tree_desc(t+i, &tree->object.oid, tree->buffer, tree->size);
 	}
@@ -282,7 +289,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 				 the_repository->index,
 				 trees[0]);
 
-	if (write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
+	if (write_locked_index(the_repository->index, &lock_file, COMMIT_LOCK))
 		die("unable to write new index file");
 	return 0;
 }

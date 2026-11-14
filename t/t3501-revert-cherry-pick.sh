@@ -5,7 +5,6 @@ test_description='miscellaneous basic tests for cherry-pick and revert'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -68,7 +67,7 @@ test_expect_success 'cherry-pick after renaming branch' '
 	git checkout rename2 &&
 	git cherry-pick added &&
 	test_cmp_rev rename2 HEAD^ &&
-	grep "Add extra line at the end" opos &&
+	test_grep "Add extra line at the end" opos &&
 	git reflog -1 | grep cherry-pick
 
 '
@@ -163,7 +162,7 @@ test_expect_success 'cherry-pick works with dirty renamed file' '
 	echo modified >renamed &&
 	git cherry-pick refs/heads/unrelated &&
 	test $(git rev-parse :0:renamed) = $(git rev-parse HEAD~2:to-rename.t) &&
-	grep -q "^modified$" renamed
+	test_grep -q "^modified$" renamed
 '
 
 test_expect_success 'advice from failed revert' '
@@ -178,7 +177,7 @@ test_expect_success 'advice from failed revert' '
 	hint: You can instead skip this commit with "git revert --skip".
 	hint: To abort and get back to the state before "git revert",
 	hint: run "git revert --abort".
-	hint: Disable this message with "git config advice.mergeConflict false"
+	hint: Disable this message with "git config set --global advice.mergeConflict false"
 	EOF
 	test_commit --append --no-tag "double-add dream" dream dream &&
 	test_must_fail git revert HEAD^ 2>actual &&
@@ -228,6 +227,20 @@ test_expect_success 'identification of reverted commit (--reference)' '
 	test_cmp expect actual
 '
 
+test_expect_success 'git revert --reference with core.commentChar' '
+	test_when_finished "git reset --hard to-ident" &&
+	git checkout --detach to-ident &&
+	GIT_EDITOR="head -n4 >actual" git -c core.commentChar=% revert \
+		--edit --reference HEAD &&
+	cat <<-EOF >expect &&
+	% *** SAY WHY WE ARE REVERTING ON THE TITLE LINE ***
+
+	This reverts commit $(git show -s --pretty=reference HEAD^).
+
+	EOF
+	test_cmp expect actual
+'
+
 test_expect_success 'identification of reverted commit (revert.reference)' '
 	git checkout --detach to-ident &&
 	git -c revert.reference=true revert --no-edit HEAD &&
@@ -240,7 +253,7 @@ test_expect_success 'identification of reverted commit (revert.reference)' '
 test_expect_success 'cherry-pick is unaware of --reference (for now)' '
 	test_when_finished "git reset --hard" &&
 	test_must_fail git cherry-pick --reference HEAD 2>actual &&
-	grep "^usage: git cherry-pick" actual
+	test_grep "^usage: git cherry-pick" actual
 '
 
 test_done

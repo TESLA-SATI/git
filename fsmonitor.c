@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "dir.h"
@@ -6,6 +9,7 @@
 #include "fsmonitor.h"
 #include "fsmonitor-ipc.h"
 #include "name-hash.h"
+#include "repository.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "trace2.h"
@@ -39,7 +43,7 @@ static int fsmonitor_hook_version(void)
 {
 	int hook_version;
 
-	if (git_config_get_int("core.fsmonitorhookversion", &hook_version))
+	if (repo_config_get_int(the_repository, "core.fsmonitorhookversion", &hook_version))
 		return -1;
 
 	if (hook_version == HOOK_INTERFACE_VERSION1 ||
@@ -167,7 +171,7 @@ static int query_fsmonitor_hook(struct repository *r,
 	strvec_pushf(&cp.args, "%d", version);
 	strvec_pushf(&cp.args, "%s", last_update);
 	cp.use_shell = 1;
-	cp.dir = get_git_work_tree();
+	cp.dir = repo_get_work_tree(the_repository);
 
 	trace2_region_enter("fsm_hook", "query", NULL);
 
@@ -244,7 +248,7 @@ static size_t handle_using_name_hash_icase(
 	 * technically this is a tracked file or a sparse-directory.
 	 * It should not have any entries in the untracked-cache, so
 	 * we should not need to use the case-corrected spelling to
-	 * invalidate the the untracked-cache.  So we may not need to
+	 * invalidate the untracked-cache.  So we may not need to
 	 * do this.  For now, I'm going to be conservative and always
 	 * do it; we can revisit this later.
 	 */
@@ -449,7 +453,7 @@ static void fsmonitor_refresh_callback(struct index_state *istate, char *name)
 	 * case-insensitive file system, try again using the name-hash
 	 * and dir-name-hash.
 	 */
-	if (!nr_in_cone && ignore_case) {
+	if (!nr_in_cone && repo_ignore_case(the_repository)) {
 		nr_in_cone = handle_using_name_hash_icase(istate, name);
 		if (!nr_in_cone)
 			nr_in_cone = handle_using_dir_name_hash_icase(

@@ -15,7 +15,7 @@ enum fsck_msg_type {
 };
 
 /*
- * Documentation/fsck-msgids.txt documents these; when
+ * Documentation/fsck-msgids.adoc documents these; when
  * modifying this list in any way, make sure to keep the
  * two in sync.
  */
@@ -25,17 +25,39 @@ enum fsck_msg_type {
 	FUNC(NUL_IN_HEADER, FATAL) \
 	FUNC(UNTERMINATED_HEADER, FATAL) \
 	/* errors */ \
+	FUNC(BAD_HEADER_CONTINUATION, ERROR) \
 	FUNC(BAD_DATE, ERROR) \
 	FUNC(BAD_DATE_OVERFLOW, ERROR) \
 	FUNC(BAD_EMAIL, ERROR) \
+	FUNC(BAD_GPGSIG, ERROR) \
+	FUNC(BAD_HEAD_TARGET, ERROR) \
 	FUNC(BAD_NAME, ERROR) \
 	FUNC(BAD_OBJECT_SHA1, ERROR) \
+	FUNC(BAD_PACKED_REF_ENTRY, ERROR) \
+	FUNC(BAD_PACKED_REF_HEADER, ERROR) \
 	FUNC(BAD_PARENT_SHA1, ERROR) \
+	FUNC(BAD_REFERENT_NAME, ERROR) \
+	FUNC(BAD_REF_CONTENT, ERROR) \
+	FUNC(BAD_REF_FILETYPE, ERROR) \
+	FUNC(BAD_REF_NAME, ERROR) \
+	FUNC(BAD_REF_OID, ERROR) \
 	FUNC(BAD_TIMEZONE, ERROR) \
 	FUNC(BAD_TREE, ERROR) \
 	FUNC(BAD_TREE_SHA1, ERROR) \
 	FUNC(BAD_TYPE, ERROR) \
 	FUNC(DUPLICATE_ENTRIES, ERROR) \
+	FUNC(GITATTRIBUTES_BLOB, ERROR) \
+	FUNC(GITATTRIBUTES_LARGE, ERROR) \
+	FUNC(GITATTRIBUTES_LINE_LENGTH, ERROR) \
+	FUNC(GITATTRIBUTES_MISSING, ERROR) \
+	FUNC(GITMODULES_BLOB, ERROR) \
+	FUNC(GITMODULES_LARGE, ERROR) \
+	FUNC(GITMODULES_MISSING, ERROR) \
+	FUNC(GITMODULES_NAME, ERROR) \
+	FUNC(GITMODULES_PATH, ERROR) \
+	FUNC(GITMODULES_SYMLINK, ERROR) \
+	FUNC(GITMODULES_UPDATE, ERROR) \
+	FUNC(GITMODULES_URL, ERROR) \
 	FUNC(MISSING_AUTHOR, ERROR) \
 	FUNC(MISSING_COMMITTER, ERROR) \
 	FUNC(MISSING_EMAIL, ERROR) \
@@ -49,39 +71,35 @@ enum fsck_msg_type {
 	FUNC(MISSING_TYPE, ERROR) \
 	FUNC(MISSING_TYPE_ENTRY, ERROR) \
 	FUNC(MULTIPLE_AUTHORS, ERROR) \
+	FUNC(PACKED_REF_ENTRY_NOT_TERMINATED, ERROR) \
+	FUNC(PACKED_REF_UNSORTED, ERROR) \
 	FUNC(TREE_NOT_SORTED, ERROR) \
 	FUNC(UNKNOWN_TYPE, ERROR) \
 	FUNC(ZERO_PADDED_DATE, ERROR) \
-	FUNC(GITMODULES_MISSING, ERROR) \
-	FUNC(GITMODULES_BLOB, ERROR) \
-	FUNC(GITMODULES_LARGE, ERROR) \
-	FUNC(GITMODULES_NAME, ERROR) \
-	FUNC(GITMODULES_SYMLINK, ERROR) \
-	FUNC(GITMODULES_URL, ERROR) \
-	FUNC(GITMODULES_PATH, ERROR) \
-	FUNC(GITMODULES_UPDATE, ERROR) \
-	FUNC(GITATTRIBUTES_MISSING, ERROR) \
-	FUNC(GITATTRIBUTES_LARGE, ERROR) \
-	FUNC(GITATTRIBUTES_LINE_LENGTH, ERROR) \
-	FUNC(GITATTRIBUTES_BLOB, ERROR) \
 	/* warnings */ \
+	FUNC(BAD_REFTABLE_TABLE_NAME, WARN) \
 	FUNC(EMPTY_NAME, WARN) \
 	FUNC(FULL_PATHNAME, WARN) \
 	FUNC(HAS_DOT, WARN) \
 	FUNC(HAS_DOTDOT, WARN) \
 	FUNC(HAS_DOTGIT, WARN) \
-	FUNC(NULL_SHA1, WARN) \
-	FUNC(ZERO_PADDED_FILEMODE, WARN) \
-	FUNC(NUL_IN_COMMIT, WARN) \
 	FUNC(LARGE_PATHNAME, WARN) \
+	FUNC(NULL_SHA1, WARN) \
+	FUNC(NUL_IN_COMMIT, WARN) \
+	FUNC(ZERO_PADDED_FILEMODE, WARN) \
 	/* infos (reported as warnings, but ignored by default) */ \
 	FUNC(BAD_FILEMODE, INFO) \
-	FUNC(GITMODULES_PARSE, INFO) \
-	FUNC(GITIGNORE_SYMLINK, INFO) \
-	FUNC(GITATTRIBUTES_SYMLINK, INFO) \
-	FUNC(MAILMAP_SYMLINK, INFO) \
 	FUNC(BAD_TAG_NAME, INFO) \
+	FUNC(EMPTY_PACKED_REFS_FILE, INFO) \
+	FUNC(GITATTRIBUTES_SYMLINK, INFO) \
+	FUNC(GITIGNORE_SYMLINK, INFO) \
+	FUNC(GITMODULES_PARSE, INFO) \
+	FUNC(MAILMAP_SYMLINK, INFO) \
 	FUNC(MISSING_TAGGER_ENTRY, INFO) \
+	FUNC(REF_MISSING_NEWLINE, INFO) \
+	FUNC(SYMLINK_REF, INFO) \
+	FUNC(SYMREF_TARGET_IS_NOT_A_REF, INFO) \
+	FUNC(TRAILING_REF_CONTENT, INFO) \
 	/* ignored (elevated when requested) */ \
 	FUNC(EXTRA_HEADER_ENTRY, IGNORE)
 
@@ -114,60 +132,56 @@ int is_valid_msg_type(const char *msg_id, const char *msg_type);
 typedef int (*fsck_walk_func)(struct object *obj, enum object_type object_type,
 			      void *data, struct fsck_options *options);
 
-/* callback for fsck_object, type is FSCK_ERROR or FSCK_WARN */
+/*
+ * Callback for reporting errors either for objects or refs. The "fsck_report"
+ * is a generic pointer that can be used to pass any information.
+ */
 typedef int (*fsck_error)(struct fsck_options *o,
-			  const struct object_id *oid, enum object_type object_type,
+			  void *fsck_report,
 			  enum fsck_msg_type msg_type, enum fsck_msg_id msg_id,
 			  const char *message);
 
-int fsck_error_function(struct fsck_options *o,
-			const struct object_id *oid, enum object_type object_type,
-			enum fsck_msg_type msg_type, enum fsck_msg_id msg_id,
-			const char *message);
-int fsck_error_cb_print_missing_gitmodules(struct fsck_options *o,
-					   const struct object_id *oid,
-					   enum object_type object_type,
-					   enum fsck_msg_type msg_type,
-					   enum fsck_msg_id msg_id,
-					   const char *message);
+int fsck_objects_error_function(struct fsck_options *o,
+				void *fsck_report,
+				enum fsck_msg_type msg_type, enum fsck_msg_id msg_id,
+				const char *message);
+int fsck_objects_error_cb_print_missing_gitmodules(struct fsck_options *o,
+						   void *fsck_report,
+						   enum fsck_msg_type msg_type,
+						   enum fsck_msg_id msg_id,
+						   const char *message);
+
+int fsck_refs_error_function(struct fsck_options *options,
+			     void *fsck_report,
+			     enum fsck_msg_type msg_type,
+			     enum fsck_msg_id msg_id,
+			     const char *message);
+
+struct fsck_object_report {
+	const struct object_id *oid;
+	enum object_type object_type;
+};
+
+struct fsck_ref_report {
+	const char *path;
+};
+
+struct repository;
 
 struct fsck_options {
+	struct repository *repo;
 	fsck_walk_func walk;
 	fsck_error error_func;
-	unsigned strict:1;
+	unsigned strict;
+	unsigned verbose;
 	enum fsck_msg_type *msg_type;
-	struct oidset skiplist;
+	struct oidset skip_oids;
 	struct oidset gitmodules_found;
 	struct oidset gitmodules_done;
 	struct oidset gitattributes_found;
 	struct oidset gitattributes_done;
 	kh_oid_map_t *object_names;
 };
-
-#define FSCK_OPTIONS_DEFAULT { \
-	.skiplist = OIDSET_INIT, \
-	.gitmodules_found = OIDSET_INIT, \
-	.gitmodules_done = OIDSET_INIT, \
-	.gitattributes_found = OIDSET_INIT, \
-	.gitattributes_done = OIDSET_INIT, \
-	.error_func = fsck_error_function \
-}
-#define FSCK_OPTIONS_STRICT { \
-	.strict = 1, \
-	.gitmodules_found = OIDSET_INIT, \
-	.gitmodules_done = OIDSET_INIT, \
-	.gitattributes_found = OIDSET_INIT, \
-	.gitattributes_done = OIDSET_INIT, \
-	.error_func = fsck_error_function, \
-}
-#define FSCK_OPTIONS_MISSING_GITMODULES { \
-	.strict = 1, \
-	.gitmodules_found = OIDSET_INIT, \
-	.gitmodules_done = OIDSET_INIT, \
-	.gitattributes_found = OIDSET_INIT, \
-	.gitattributes_done = OIDSET_INIT, \
-	.error_func = fsck_error_cb_print_missing_gitmodules, \
-}
 
 /* descend in all linked child objects
  * the return value is:
@@ -190,7 +204,7 @@ int fsck_object(struct object *obj, void *data, unsigned long size,
  * struct.
  */
 int fsck_buffer(const struct object_id *oid, enum object_type,
-		void *data, unsigned long size,
+		const void *data, unsigned long size,
 		struct fsck_options *options);
 
 /*
@@ -208,6 +222,39 @@ int fsck_tag_standalone(const struct object_id *oid, const char *buffer,
  * checks.
  */
 int fsck_finish(struct fsck_options *options);
+
+/*
+ * Check whether there are any checks that have been queued up and that still
+ * need to be run. Returns `false` iff `fsck_finish()` wouldn't perform any
+ * actions, `true` otherwise.
+ */
+bool fsck_has_queued_checks(struct fsck_options *options);
+
+enum fsck_options_type {
+	FSCK_OPTIONS_DEFAULT,
+	FSCK_OPTIONS_STRICT,
+	FSCK_OPTIONS_MISSING_GITMODULES,
+	FSCK_OPTIONS_REFS,
+};
+
+void fsck_options_init(struct fsck_options *options,
+		       struct repository *repo,
+		       enum fsck_options_type type);
+
+/*
+ * Clear the fsck_options struct, freeing any allocated memory.
+ */
+void fsck_options_clear(struct fsck_options *options);
+
+/*
+ * Report an error or warning for refs.
+ */
+__attribute__((format (printf, 4, 5)))
+int fsck_report_ref(struct fsck_options *options,
+		    struct fsck_ref_report *report,
+		    enum fsck_msg_id msg_id,
+		    const char *fmt, ...);
+
 
 /*
  * Subsystem for storing human-readable names for each object.
@@ -236,7 +283,7 @@ const char *fsck_describe_object(struct fsck_options *options,
 
 struct key_value_info;
 /*
- * git_config() callback for use by fsck-y tools that want to support
+ * repo_config() callback for use by fsck-y tools that want to support
  * fsck.<msg> fsck.skipList etc.
  */
 int git_fsck_config(const char *var, const char *value,

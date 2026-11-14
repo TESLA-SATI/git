@@ -8,7 +8,6 @@ This test runs git merge --signoff and makes sure that it works.
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # Setup test files
@@ -46,7 +45,7 @@ test_expect_success 'git merge --signoff adds a sign-off line' '
 	test_commit main-branch-2 file2 2 &&
 	git checkout other-branch &&
 	git merge main --signoff --no-edit &&
-	git cat-file commit HEAD | sed -e "1,/^\$/d" >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expected-signed actual
 '
 
@@ -56,7 +55,7 @@ test_expect_success 'git merge does not add a sign-off line' '
 	test_commit main-branch-3 file3 3 &&
 	git checkout other-branch &&
 	git merge main --no-edit &&
-	git cat-file commit HEAD | sed -e "1,/^\$/d" >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expected-unsigned actual
 '
 
@@ -66,7 +65,7 @@ test_expect_success 'git merge --no-signoff flag cancels --signoff flag' '
 	test_commit main-branch-4 file4 4 &&
 	git checkout other-branch &&
 	git merge main --no-edit --signoff --no-signoff &&
-	git cat-file commit HEAD | sed -e "1,/^\$/d" >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expected-unsigned actual
 '
 

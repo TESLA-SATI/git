@@ -2,7 +2,6 @@
 
 test_description='verbose commit template'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 write_script "check-for-diff" <<\EOF &&
@@ -107,13 +106,13 @@ test_expect_success 'verbose diff is stripped with multi-byte comment char' '
 		export GIT_EDITOR &&
 		test_must_fail git -c core.commentchar="foo>" commit -a -v >out 2>err
 	) &&
-	grep "^foo> " out &&
+	test_grep "^foo> " out &&
 	test_grep "Aborting commit due to empty commit message." err
 '
 
 test_expect_success 'status does not verbose without --verbose' '
 	git status >actual &&
-	! grep "^diff --git" actual
+	test_grep ! "^diff --git" actual
 '
 
 test_expect_success 'setup -v -v' '
@@ -164,7 +163,7 @@ done
 
 test_expect_success "status ignores commit.verbose=true" '
 	git -c commit.verbose=true status >actual &&
-	! grep "^diff --git actual"
+	test_grep ! "^diff --git" actual
 '
 
 test_done

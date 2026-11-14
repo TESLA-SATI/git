@@ -2,7 +2,6 @@
 
 test_description='test noop fetch negotiator'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'noop negotiator does not emit any "have"' '
@@ -17,8 +16,8 @@ test_expect_success 'noop negotiator does not emit any "have"' '
 	test_config -C client fetch.negotiationalgorithm noop &&
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client fetch "$(pwd)/server" &&
 
-	! grep "fetch> have" trace &&
-	grep "fetch> done" trace
+	test_grep ! "fetch> have" trace &&
+	test_grep "fetch> done" trace
 '
 
 test_done

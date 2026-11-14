@@ -1,4 +1,6 @@
 /fuzz_corpora
+/target/
+/Cargo.lock
 /GIT-BUILD-DIR
 /GIT-BUILD-OPTIONS
 /GIT-CFLAGS
@@ -9,9 +11,9 @@
 /GIT-PYTHON-VARS
 /GIT-SCRIPT-DEFINES
 /GIT-SPATCH-DEFINES
+/GIT-TEST-SUITES
 /GIT-USER-AGENT
 /GIT-VERSION-FILE
-/bin-wrappers/
 /git
 /git-add
 /git-am
@@ -19,6 +21,7 @@
 /git-apply
 /git-archimport
 /git-archive
+/git-backfill
 /git-bisect
 /git-blame
 /git-branch
@@ -54,6 +57,7 @@
 /git-diff
 /git-diff-files
 /git-diff-index
+/git-diff-pairs
 /git-diff-tree
 /git-difftool
 /git-difftool--helper
@@ -67,6 +71,7 @@
 /git-for-each-ref
 /git-for-each-repo
 /git-format-patch
+/git-format-rev
 /git-fsck
 /git-fsck-objects
 /git-fsmonitor--daemon
@@ -75,6 +80,7 @@
 /git-grep
 /git-hash-object
 /git-help
+/git-history
 /git-hook
 /git-http-backend
 /git-http-fetch
@@ -85,6 +91,7 @@
 /git-init-db
 /git-interpret-trailers
 /git-instaweb
+/git-last-modified
 /git-log
 /git-ls-files
 /git-ls-remote
@@ -126,6 +133,7 @@
 /git-rebase
 /git-receive-pack
 /git-reflog
+/git-refs
 /git-remote
 /git-remote-http
 /git-remote-https
@@ -136,6 +144,7 @@
 /git-repack
 /git-replace
 /git-replay
+/git-repo
 /git-request-pull
 /git-rerere
 /git-reset
@@ -174,6 +183,7 @@
 /git-update-server-info
 /git-upload-archive
 /git-upload-pack
+/git-url-parse
 /git-var
 /git-verify-commit
 /git-verify-pack
@@ -193,9 +203,11 @@
 /config-list.h
 /command-list.h
 /hook-list.h
+/version-def.h
 *.tar.gz
 *.dsc
 *.deb
+/git.rc
 /git.spec
 *.exe
 *.[aos]
@@ -221,6 +233,7 @@
 /.vscode/
 /tags
 /TAGS
+/tools/precompiled.h.gch
 /cscope*
 /compile_commands.json
 /.cache/
@@ -247,3 +260,5 @@ Release/
 /git.VC.db
 *.dSYM
 /contrib/buildsystems/out
+/contrib/libgit-rs/target
+/contrib/libgit-sys/target

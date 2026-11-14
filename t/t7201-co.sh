@@ -99,10 +99,14 @@ test_expect_success 'checkout -m with dirty tree' '
 
 	fill 0 1 2 3 4 5 6 7 8 >one &&
 	git checkout -m side >messages &&
+	test_path_is_missing .git/MERGE_LABELS &&
 
 	test "$(git symbolic-ref HEAD)" = "refs/heads/side" &&
 
-	printf "M\t%s\n" one >expect.messages &&
+	cat >expect.messages <<-\EOF &&
+	The following paths have local changes:
+	M	one
+	EOF
 	test_cmp expect.messages messages &&
 
 	fill "M	one" "A	three" "D	two" >expect.main &&
@@ -180,6 +184,27 @@ test_expect_success 'format of merge conflict from checkout -m' '
 	d
 	>>>>>>> local
 	EOF
+	test_cmp expect two &&
+
+	test_path_is_file .git/MERGE_LABELS &&
+
+	git checkout --conflict=diff3 two &&
+	cat >expect <<-\EOF &&
+	<<<<<<< simple
+	a
+	c
+	e
+	||||||| main
+	a
+	b
+	c
+	d
+	e
+	=======
+	b
+	d
+	>>>>>>> local
+	EOF
 	test_cmp expect two
 '
 
@@ -210,6 +235,80 @@ test_expect_success 'checkout --merge --conflict=diff3 <branch>' '
 	test_cmp expect two
 '
 
+test_expect_success 'checkout -m with mixed staged and unstaged changes' '
+	git checkout -f main &&
+	git clean -f &&
+
+	fill 0 x y z >same &&
+	git add same &&
+	fill 1 2 3 4 5 6 7 >one &&
+	git checkout -m side >actual 2>&1 &&
+	test_grep "Applied autostash" actual &&
+	fill 0 x y z >expect &&
+	test_cmp expect same &&
+	fill 1 2 3 4 5 6 7 >expect &&
+	test_cmp expect one
+'
+
+test_expect_success 'checkout -m creates a recoverable stash on conflict' '
+	git checkout -f main &&
+	git clean -f &&
+
+	fill 1 2 3 4 5 >one &&
+	test_must_fail git checkout side 2>stderr &&
+	test_grep "Your local changes" stderr &&
+	git checkout -m side >actual 2>&1 &&
+	cat >expect <<-EOF &&
+	Your local changes are stashed, however applying them
+	resulted in conflicts.  You can either resolve the conflicts
+	and then discard the stash with "git stash drop", or, if you
+	do not want to resolve them now, run "git reset --hard" and
+	apply the local changes later by running "git stash pop".
+
+	Switched to branch ${SQ}side${SQ}
+	The following paths have local changes:
+	M	one
+	EOF
+	test_cmp expect actual &&
+	git log -p -1 --format="%gs%n%B" -g --diff-merges=1 refs/stash >actual &&
+	sed /^index/d actual >actual.trimmed &&
+	cat >expect <<-EOF &&
+	autostash while switching to ${SQ}side${SQ}
+	On main: autostash while switching to ${SQ}side${SQ}
+
+	diff --git a/one b/one
+	--- a/one
+	+++ b/one
+	@@ -3,6 +3,3 @@
+	 3
+	 4
+	 5
+	-6
+	-7
+	-8
+	EOF
+	test_cmp expect actual.trimmed &&
+	git stash drop &&
+	git reset --hard
+'
+
+test_expect_success 'checkout -m which would overwrite untracked file' '
+	git checkout -f --detach main &&
+	test_commit another-file &&
+	git checkout HEAD^ &&
+	>another-file.t &&
+	fill 1 2 3 4 5 >one &&
+	test_must_fail git checkout -m @{-1} 2>err &&
+	q_to_tab >expect <<-\EOF &&
+	error: The following untracked working tree files would be overwritten by checkout:
+	Qanother-file.t
+	Please move or remove them before you switch branches.
+	Aborting
+	Applied autostash.
+	EOF
+	test_cmp expect err
+'
+
 test_expect_success 'switch to another branch while carrying a deletion' '
 	git checkout -f main &&
 	git reset --hard &&
@@ -224,7 +323,7 @@ test_expect_success 'switch to another branch while carrying a deletion' '
 '
 
 test_expect_success 'checkout to detach HEAD (with advice declined)' '
-	git config advice.detachedHead false &&
+	git config set advice.detachedHead false &&
 	rev=$(git rev-parse --short renamer^) &&
 	git checkout -f renamer &&
 	git clean -f &&
@@ -244,12 +343,12 @@ test_expect_success 'checkout to detach HEAD (with advice declined)' '
 '
 
 test_expect_success 'checkout to detach HEAD' '
-	git config advice.detachedHead true &&
+	git config set advice.detachedHead true &&
 	rev=$(git rev-parse --short renamer^) &&
 	git checkout -f renamer &&
 	git clean -f &&
 	git checkout renamer^ 2>messages &&
-	grep "HEAD is now at $rev" messages &&
+	test_grep "HEAD is now at $rev" messages &&
 	test_line_count -gt 1 messages &&
 	H=$(git rev-parse --verify HEAD) &&
 	M=$(git show-ref -s --verify refs/heads/main) &&
@@ -497,6 +596,19 @@ test_expect_success 'checkout unmerged stage' '
 	test ztheirside = "z$(cat file)"
 '
 
+test_expect_success 'checkout --ours is incompatible with switching' '
+	test_must_fail git checkout --ours 2>error &&
+	test_grep "needs the paths to check out" error &&
+
+	test_must_fail git checkout --ours HEAD 2>error &&
+	test_grep "cannot be used with switching" error &&
+
+	test_must_fail git checkout --ours main 2>error &&
+	test_grep "cannot be used with switching" error &&
+
+	git checkout --ours file
+'
+
 test_expect_success 'checkout path with --merge from tree-ish is a no-no' '
 	setup_conflicting_index &&
 	test_must_fail git checkout -m HEAD -- file
@@ -712,7 +824,7 @@ test_expect_success 'switch out of non-branch' '
 	git checkout main^0 &&
 	echo modified >one &&
 	test_must_fail git checkout renamer 2>error.log &&
-	! grep "^Previous HEAD" error.log
+	test_grep ! "^Previous HEAD" error.log
 '
 
 (
@@ -762,7 +874,7 @@ test_expect_success 'custom merge driver with checkout -m' '
 	(
 		for t in filfre-common left right
 		do
-			grep $t arm || exit 1
+			test_grep $t arm || exit 1
 		done
 	) &&
 

@@ -2,7 +2,6 @@
 
 test_description='handling of missing objects in rev-list'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # We setup the repository with two commits, this way HEAD is always
@@ -69,7 +68,7 @@ do
 			allow-any)
 				;;
 			print)
-				grep ?$oid actual.raw &&
+				test_grep ?$oid actual.raw &&
 				echo ?$oid >>expect.raw
 				;;
 			esac &&
@@ -133,7 +132,7 @@ do
 				allow-any)
 					;;
 				print)
-					grep ?$oid actual.raw &&
+					test_grep ?$oid actual.raw &&
 					echo ?$oid >>expect.raw
 					;;
 				esac &&
@@ -145,5 +144,138 @@ do
 		done
 	done
 done
+
+for obj in "HEAD~1" "HEAD^{tree}" "HEAD:foo" "HEAD:foo/bar" "HEAD:baz baz"
+do
+	test_expect_success "--missing=print-info with missing '$obj'" '
+		test_when_finished rm -rf missing-info &&
+
+		git init missing-info &&
+		(
+			cd missing-info &&
+			git commit --allow-empty -m first &&
+
+			mkdir foo &&
+			echo bar >foo/bar &&
+			echo baz >"baz baz" &&
+			echo bat >bat\" &&
+			git add -A &&
+			git commit -m second &&
+
+			oid="$(git rev-parse "$obj")" &&
+			path=".git/objects/$(test_oid_to_path $oid)" &&
+			type_info=" type=$(git cat-file -t $oid)" &&
+
+			case $obj in
+			HEAD:foo)
+				path_info=" path=foo"
+				;;
+			HEAD:foo/bar)
+				path_info=" path=foo/bar"
+				;;
+			"HEAD:baz baz")
+				path_info=" path=\"baz baz\""
+				;;
+			"HEAD:bat\"")
+				path_info=" path=\"bat\\\"\""
+				;;
+			esac &&
+
+			# Before the object is made missing, we use rev-list to
+			# get the expected oids.
+			git rev-list --objects --no-object-names \
+				HEAD ^"$obj" >expect.raw &&
+			echo "?$oid$path_info$type_info" >>expect.raw &&
+
+			mv "$path" "$path.hidden" &&
+			git rev-list --objects --no-object-names \
+				--missing=print-info HEAD >actual.raw &&
+
+			sort actual.raw >actual &&
+			sort expect.raw >expect &&
+			test_cmp expect actual
+		)
+	'
+done
+
+for obj in "HEAD~1" "HEAD~1^{tree}" "HEAD:1.t"
+do
+	test_expect_success "rev-list --missing-only with missing $obj" '
+		oid="$(git rev-parse $obj)" &&
+		path=".git/objects/$(test_oid_to_path $oid)" &&
+
+		mv "$path" "$path.hidden" &&
+		test_when_finished "mv $path.hidden $path" &&
+
+		git rev-list --missing=print --missing-only --objects \
+			--no-object-names HEAD >actual &&
+
+		echo $oid >expect &&
+		test_cmp expect actual
+	'
+done
+
+test_expect_success "--missing-only requires --missing=print or --missing=print-info" '
+	test_must_fail git rev-list --missing-only --objects HEAD 2>err &&
+	test_grep "requires --missing=print" err
+'
+
+test_expect_success "--missing-only is incompatible with --count" '
+	test_must_fail git rev-list --missing=print --missing-only \
+		--count --objects HEAD 2>err &&
+	test_grep "cannot be used together" err
+'
+
+test_expect_success "--missing-only is incompatible with --disk-usage" '
+	test_must_fail git rev-list --missing=print --missing-only \
+		--disk-usage --objects HEAD 2>err &&
+	test_grep "cannot be used together" err
+'
+
+test_expect_success "--missing-only works with --missing=print-info" '
+	oid="$(git rev-parse HEAD:1.t)" &&
+	path=".git/objects/$(test_oid_to_path $oid)" &&
+
+	mv "$path" "$path.hidden" &&
+	test_when_finished "mv $path.hidden $path" &&
+
+	git rev-list --missing=print-info --missing-only --objects \
+		--no-object-names HEAD >actual &&
+
+	# Filter keeps print-info fields; only the "?" prefix is dropped.
+	echo "$oid path=1.t type=blob" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success "-z nul-delimited --missing" '
+	test_when_finished rm -rf repo &&
+
+	git init repo &&
+	(
+		cd repo &&
+		git commit --allow-empty -m first &&
+
+		path="foo bar" &&
+		echo foobar >"$path" &&
+		git add -A &&
+		git commit -m second &&
+
+		oid=$(git rev-parse "HEAD:$path") &&
+		type="$(git cat-file -t $oid)" &&
+
+		obj_path=".git/objects/$(test_oid_to_path $oid)" &&
+
+		git rev-list -z --objects --no-object-names \
+			HEAD ^"$oid" >expect &&
+		printf "%s\0missing=yes\0path=%s\0type=%s\0" "$oid" "$path" \
+			"$type" >>expect &&
+
+		mv "$obj_path" "$obj_path.hidden" &&
+		git rev-list -z --objects --no-object-names \
+			--missing=print-info HEAD >actual &&
+
+		test_cmp expect actual
+	)
+'
 
 test_done

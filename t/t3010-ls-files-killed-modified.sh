@@ -42,7 +42,6 @@ We should report path0, path1, path2/file2, path3/file3, path7 and path8
 modified without reporting path9 and path10.  submod1 is also modified.
 '
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'git update-index --add to add various paths.' '
@@ -123,6 +122,24 @@ test_expect_success 'validate git ls-files -m output.' '
 	submod1
 	EOF
 	test_cmp .expected .output
+'
+
+test_expect_success 'worktree modes honor wildcard pathspecs' '
+	cat >.expected <<-\EOF &&
+	path2/file2
+	path3/file3
+	EOF
+	git ls-files --deleted -- "path?/file?" >.output &&
+	test_cmp .expected .output &&
+
+	cat >.expected <<-\EOF &&
+	path7
+	path8
+	EOF
+	git ls-files --modified --error-unmatch -- "path[78]" >.output &&
+	test_cmp .expected .output &&
+
+	test_must_fail git ls-files --modified --error-unmatch -- path10
 '
 
 test_done

@@ -1,3 +1,4 @@
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "abspath.h"
 #include "gettext.h"
@@ -5,7 +6,6 @@
 #include "strvec.h"
 #include "parse-options.h"
 #include "pkt-line.h"
-#include "repository.h"
 #include "bundle.h"
 
 /*
@@ -67,32 +67,26 @@ static int parse_options_cmd_bundle(int argc,
 	return argc;
 }
 
-static int cmd_bundle_create(int argc, const char **argv, const char *prefix) {
-	struct strvec pack_opts = STRVEC_INIT;
+static int cmd_bundle_create(int argc, const char **argv, const char *prefix,
+			     struct repository *repo UNUSED)
+{
+	int progress = isatty(STDERR_FILENO);
 	int version = -1;
-	int ret;
 	struct option options[] = {
-		OPT_PASSTHRU_ARGV('q', "quiet", &pack_opts, NULL,
-				  N_("do not show progress meter"),
-				  PARSE_OPT_NOARG),
-		OPT_PASSTHRU_ARGV(0, "progress", &pack_opts, NULL,
-				  N_("show progress meter"),
-				  PARSE_OPT_NOARG),
-		OPT_PASSTHRU_ARGV(0, "all-progress", &pack_opts, NULL,
-				  N_("historical; same as --progress"),
-				  PARSE_OPT_NOARG | PARSE_OPT_HIDDEN),
-		OPT_PASSTHRU_ARGV(0, "all-progress-implied", &pack_opts, NULL,
-				  N_("historical; does nothing"),
-				  PARSE_OPT_NOARG | PARSE_OPT_HIDDEN),
+		OPT_NEGBIT('q', "quiet", &progress,
+			   N_("do not show progress meter"), 1),
+		OPT_BIT(0, "progress", &progress,
+			N_("show progress meter"), 1),
+		OPT_BIT_F(0, "all-progress", &progress,
+			  N_("historical; same as --progress"), 1,
+			  PARSE_OPT_HIDDEN),
+		OPT_NOOP_NOARG(0, "all-progress-implied"),
 		OPT_INTEGER(0, "version", &version,
 			    N_("specify bundle format version")),
 		OPT_END()
 	};
 	char *bundle_file;
-
-	if (isatty(STDERR_FILENO))
-		strvec_push(&pack_opts, "--progress");
-	strvec_push(&pack_opts, "--all-progress-implied");
+	int ret;
 
 	argc = parse_options_cmd_bundle(argc, argv, prefix,
 			builtin_bundle_create_usage, options, &bundle_file);
@@ -100,8 +94,7 @@ static int cmd_bundle_create(int argc, const char **argv, const char *prefix) {
 
 	if (!startup_info->have_repository)
 		die(_("Need a repository to create a bundle."));
-	ret = !!create_bundle(the_repository, bundle_file, argc, argv, &pack_opts, version);
-	strvec_clear(&pack_opts);
+	ret = !!create_bundle(the_repository, bundle_file, argc, argv, version, progress);
 	free(bundle_file);
 	return ret;
 }
@@ -123,7 +116,8 @@ static int open_bundle(const char *path, struct bundle_header *header,
 	return read_bundle_header(path, header);
 }
 
-static int cmd_bundle_verify(int argc, const char **argv, const char *prefix) {
+static int cmd_bundle_verify(int argc, const char **argv, const char *prefix,
+			     struct repository *repo UNUSED) {
 	struct bundle_header header = BUNDLE_HEADER_INIT;
 	int bundle_fd = -1;
 	int quiet = 0;
@@ -139,6 +133,11 @@ static int cmd_bundle_verify(int argc, const char **argv, const char *prefix) {
 	argc = parse_options_cmd_bundle(argc, argv, prefix,
 			builtin_bundle_verify_usage, options, &bundle_file);
 	/* bundle internals use argv[1] as further parameters */
+
+	if (!startup_info->have_repository) {
+		ret = error(_("need a repository to verify a bundle"));
+		goto cleanup;
+	}
 
 	if ((bundle_fd = open_bundle(bundle_file, &header, &name)) < 0) {
 		ret = 1;
@@ -159,7 +158,8 @@ cleanup:
 	return ret;
 }
 
-static int cmd_bundle_list_heads(int argc, const char **argv, const char *prefix) {
+static int cmd_bundle_list_heads(int argc, const char **argv, const char *prefix,
+				 struct repository *repo UNUSED) {
 	struct bundle_header header = BUNDLE_HEADER_INIT;
 	int bundle_fd = -1;
 	int ret;
@@ -184,7 +184,8 @@ cleanup:
 	return ret;
 }
 
-static int cmd_bundle_unbundle(int argc, const char **argv, const char *prefix) {
+static int cmd_bundle_unbundle(int argc, const char **argv, const char *prefix,
+			       struct repository *repo UNUSED) {
 	struct bundle_header header = BUNDLE_HEADER_INIT;
 	int bundle_fd = -1;
 	int ret;
@@ -202,25 +203,31 @@ static int cmd_bundle_unbundle(int argc, const char **argv, const char *prefix) 
 			builtin_bundle_unbundle_usage, options, &bundle_file);
 	/* bundle internals use argv[1] as further parameters */
 
+	if (!startup_info->have_repository)
+		die(_("Need a repository to unbundle."));
+
 	if ((bundle_fd = open_bundle(bundle_file, &header, NULL)) < 0) {
 		ret = 1;
 		goto cleanup;
 	}
-	if (!startup_info->have_repository)
-		die(_("Need a repository to unbundle."));
 	if (progress)
 		strvec_pushl(&extra_index_pack_args, "-v", "--progress-title",
 			     _("Unbundling objects"), NULL);
 	ret = !!unbundle(the_repository, &header, bundle_fd,
-			 &extra_index_pack_args, 0) ||
+			 &extra_index_pack_args, NULL) ||
 		list_bundle_refs(&header, argc, argv);
 	bundle_header_release(&header);
+
 cleanup:
+	strvec_clear(&extra_index_pack_args);
 	free(bundle_file);
 	return ret;
 }
 
-int cmd_bundle(int argc, const char **argv, const char *prefix)
+int cmd_bundle(int argc,
+	       const char **argv,
+	       const char *prefix,
+	       struct repository *repo)
 {
 	parse_opt_subcommand_fn *fn = NULL;
 	struct option options[] = {
@@ -236,5 +243,5 @@ int cmd_bundle(int argc, const char **argv, const char *prefix)
 
 	packet_trace_identity("bundle");
 
-	return !!fn(argc, argv, prefix);
+	return !!fn(argc, argv, prefix, repo);
 }

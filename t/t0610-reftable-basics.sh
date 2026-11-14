@@ -4,18 +4,22 @@
 #
 
 test_description='reftable basics'
+
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+GIT_TEST_DEFAULT_REF_STORAGE_FORMAT=reftable
+export GIT_TEST_DEFAULT_REF_STORAGE_FORMAT
 
 . ./test-lib.sh
 
-if ! test_have_prereq REFTABLE
-then
-	skip_all='skipping reftable tests; set GIT_TEST_DEFAULT_REF_FORMAT=reftable'
-	test_done
-fi
-
 INVALID_OID=$(test_oid 001)
+
+test_expect_success 'pack-refs does not crash with -h' '
+	git pack-refs -h >usage &&
+	test_grep "[Uu]sage: git pack-refs " usage &&
+	nongit git pack-refs -h >usage &&
+	test_grep "[Uu]sage: git pack-refs " usage
+'
 
 test_expect_success 'init: creates basic reftable structures' '
 	test_when_finished "rm -rf repo" &&
@@ -23,7 +27,7 @@ test_expect_success 'init: creates basic reftable structures' '
 	test_path_is_dir repo/.git/reftable &&
 	test_path_is_file repo/.git/reftable/tables.list &&
 	echo reftable >expect &&
-	git -C repo rev-parse --show-ref-format >actual &&
+	git -C repo rev-parse --show-ref-storage-format >actual &&
 	test_cmp expect actual
 '
 
@@ -34,7 +38,7 @@ test_expect_success 'init: sha256 object format via environment variable' '
 	sha256
 	reftable
 	EOF
-	git -C repo rev-parse --show-object-format --show-ref-format >actual &&
+	git -C repo rev-parse --show-object-format --show-ref-storage-format >actual &&
 	test_cmp expect actual
 '
 
@@ -45,7 +49,7 @@ test_expect_success 'init: sha256 object format via option' '
 	sha256
 	reftable
 	EOF
-	git -C repo rev-parse --show-object-format --show-ref-format >actual &&
+	git -C repo rev-parse --show-object-format --show-ref-storage-format >actual &&
 	test_cmp expect actual
 '
 
@@ -55,35 +59,35 @@ test_expect_success 'init: reinitializing reftable backend succeeds' '
 	test_commit -C repo A &&
 
 	git -C repo for-each-ref >expect &&
-	git init --ref-format=reftable repo &&
+	git init --ref-storage-format=reftable repo &&
 	git -C repo for-each-ref >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'init: reinitializing files with reftable backend fails' '
 	test_when_finished "rm -rf repo" &&
-	git init --ref-format=files repo &&
+	git init --ref-storage-format=files repo &&
 	test_commit -C repo file &&
 
 	cp repo/.git/HEAD expect &&
-	test_must_fail git init --ref-format=reftable repo &&
+	test_must_fail git init --ref-storage-format=reftable repo &&
 	test_cmp expect repo/.git/HEAD
 '
 
 test_expect_success 'init: reinitializing reftable with files backend fails' '
 	test_when_finished "rm -rf repo" &&
-	git init --ref-format=reftable repo &&
+	git init --ref-storage-format=reftable repo &&
 	test_commit -C repo file &&
 
 	cp repo/.git/HEAD expect &&
-	test_must_fail git init --ref-format=files repo &&
+	test_must_fail git init --ref-storage-format=files repo &&
 	test_cmp expect repo/.git/HEAD
 '
 
 test_expect_perms () {
-	local perms="$1"
-	local file="$2"
-	local actual=$(ls -l "$file") &&
+	local perms="$1" &&
+	local file="$2" &&
+	local actual="$(ls -l "$file")" &&
 
 	case "$actual" in
 	$perms*)
@@ -96,23 +100,54 @@ test_expect_perms () {
 	esac
 }
 
-for umask in 002 022
-do
-	test_expect_success POSIXPERM 'init: honors core.sharedRepository' '
+test_expect_reftable_perms () {
+	local umask="$1"
+	local shared="$2"
+	local expect="$3"
+
+	test_expect_success POSIXPERM "init: honors --shared=$shared with umask $umask" '
 		test_when_finished "rm -rf repo" &&
 		(
 			umask $umask &&
-			git init --shared=true repo &&
-			test 1 = "$(git -C repo config core.sharedrepository)"
+			git init --shared=$shared repo
 		) &&
-		test_expect_perms "-rw-rw-r--" repo/.git/reftable/tables.list &&
+		test_expect_perms "$expect" repo/.git/reftable/tables.list &&
 		for table in repo/.git/reftable/*.ref
 		do
-			test_expect_perms "-rw-rw-r--" "$table" ||
+			test_expect_perms "$expect" "$table" ||
 			return 1
 		done
 	'
-done
+
+	test_expect_success POSIXPERM "pack-refs: honors --shared=$shared with umask $umask" '
+		test_when_finished "rm -rf repo" &&
+		(
+			umask $umask &&
+			git init --shared=$shared repo &&
+			test_commit -C repo A &&
+			test_line_count = 2 repo/.git/reftable/tables.list &&
+			git -C repo pack-refs
+		) &&
+		test_expect_perms "$expect" repo/.git/reftable/tables.list &&
+		for table in repo/.git/reftable/*.ref
+		do
+			test_expect_perms "$expect" "$table" ||
+			return 1
+		done
+	'
+}
+
+test_expect_reftable_perms 002 umask "-rw-rw-r--"
+test_expect_reftable_perms 022 umask "-rw-r--r--"
+test_expect_reftable_perms 027 umask "-rw-r-----"
+
+test_expect_reftable_perms 002 group "-rw-rw-r--"
+test_expect_reftable_perms 022 group "-rw-rw-r--"
+test_expect_reftable_perms 027 group "-rw-rw----"
+
+test_expect_reftable_perms 002 world "-rw-rw-r--"
+test_expect_reftable_perms 022 world "-rw-rw-r--"
+test_expect_reftable_perms 027 world "-rw-rw-r--"
 
 test_expect_success 'clone: can clone reftable repository' '
 	test_when_finished "rm -rf repo clone" &&
@@ -121,45 +156,45 @@ test_expect_success 'clone: can clone reftable repository' '
 
 	git clone repo cloned &&
 	echo reftable >expect &&
-	git -C cloned rev-parse --show-ref-format >actual &&
+	git -C cloned rev-parse --show-ref-storage-format >actual &&
 	test_cmp expect actual &&
 	test_path_is_file cloned/file1
 '
 
 test_expect_success 'clone: can clone reffiles into reftable repository' '
 	test_when_finished "rm -rf reffiles reftable" &&
-	git init --ref-format=files reffiles &&
+	git init --ref-storage-format=files reffiles &&
 	test_commit -C reffiles A &&
-	git clone --ref-format=reftable ./reffiles reftable &&
+	git clone --ref-storage-format=reftable ./reffiles reftable &&
 
 	git -C reffiles rev-parse HEAD >expect &&
 	git -C reftable rev-parse HEAD >actual &&
 	test_cmp expect actual &&
 
-	git -C reftable rev-parse --show-ref-format >actual &&
+	git -C reftable rev-parse --show-ref-storage-format >actual &&
 	echo reftable >expect &&
 	test_cmp expect actual &&
 
-	git -C reffiles rev-parse --show-ref-format >actual &&
+	git -C reffiles rev-parse --show-ref-storage-format >actual &&
 	echo files >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'clone: can clone reftable into reffiles repository' '
 	test_when_finished "rm -rf reffiles reftable" &&
-	git init --ref-format=reftable reftable &&
+	git init --ref-storage-format=reftable reftable &&
 	test_commit -C reftable A &&
-	git clone --ref-format=files ./reftable reffiles &&
+	git clone --ref-storage-format=files ./reftable reffiles &&
 
 	git -C reftable rev-parse HEAD >expect &&
 	git -C reffiles rev-parse HEAD >actual &&
 	test_cmp expect actual &&
 
-	git -C reftable rev-parse --show-ref-format >actual &&
+	git -C reftable rev-parse --show-ref-storage-format >actual &&
 	echo reftable >expect &&
 	test_cmp expect actual &&
 
-	git -C reffiles rev-parse --show-ref-format >actual &&
+	git -C reffiles rev-parse --show-ref-storage-format >actual &&
 	echo files >expect &&
 	test_cmp expect actual
 '
@@ -172,7 +207,7 @@ test_expect_success 'ref transaction: corrupted tables cause failure' '
 		test_commit file1 &&
 		for f in .git/reftable/*.ref
 		do
-			: >"$f" || return 1
+			test-tool truncate "$f" 0 || return 1
 		done &&
 		test_must_fail git update-ref refs/heads/main HEAD
 	)
@@ -255,7 +290,7 @@ test_expect_success 'ref transaction: creating symbolic ref fails with F/D confl
 	git init repo &&
 	test_commit -C repo A &&
 	cat >expect <<-EOF &&
-	error: unable to write symref for refs/heads: file/directory conflict
+	error: ${SQ}refs/heads/main${SQ} exists; cannot create ${SQ}refs/heads${SQ}
 	EOF
 	test_must_fail git -C repo symbolic-ref refs/heads refs/heads/foo 2>err &&
 	test_cmp expect err
@@ -293,10 +328,44 @@ test_expect_success 'ref transaction: writes cause auto-compaction' '
 	test_line_count = 1 repo/.git/reftable/tables.list &&
 
 	test_commit -C repo --no-tag A &&
-	test_line_count = 2 repo/.git/reftable/tables.list &&
+	test_line_count = 1 repo/.git/reftable/tables.list &&
 
 	test_commit -C repo --no-tag B &&
 	test_line_count = 1 repo/.git/reftable/tables.list
+'
+
+test_expect_success 'ref transaction: env var disables compaction' '
+	test_when_finished "rm -rf repo" &&
+
+	git init repo &&
+	test_commit -C repo A &&
+
+	start=$(wc -l <repo/.git/reftable/tables.list) &&
+	iterations=5 &&
+	expected=$((start + iterations)) &&
+
+	for i in $(test_seq $iterations)
+	do
+		GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
+		git -C repo update-ref branch-$i HEAD || return 1
+	done &&
+	test_line_count = $expected repo/.git/reftable/tables.list &&
+
+	git -C repo update-ref foo HEAD &&
+	test_line_count -lt $expected repo/.git/reftable/tables.list
+'
+
+test_expect_success 'ref transaction: alternating table sizes are compacted' '
+	test_when_finished "rm -rf repo" &&
+
+	git init repo &&
+	test_commit -C repo A &&
+	for i in $(test_seq 5)
+	do
+		git -C repo branch -f foo &&
+		git -C repo branch -d foo || return 1
+	done &&
+	test_line_count = 2 repo/.git/reftable/tables.list
 '
 
 check_fsync_events () {
@@ -324,7 +393,7 @@ test_expect_success 'ref transaction: writes are synced' '
 		git -C repo -c core.fsync=reference \
 		-c core.fsyncMethod=fsync update-ref refs/heads/branch HEAD &&
 	check_fsync_events trace2.txt <<-EOF
-	"name":"hardware-flush","count":2
+	"name":"hardware-flush","count":4
 	EOF
 '
 
@@ -340,20 +409,169 @@ test_expect_success 'ref transaction: empty transaction in empty repo' '
 	EOF
 '
 
+test_expect_success 'ref transaction: fails gracefully when auto compaction fails' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+
+		test_commit A &&
+		for i in $(test_seq 10)
+		do
+			git branch branch-$i &&
+			for table in .git/reftable/*.ref
+			do
+				touch "$table.lock" || exit 1
+			done ||
+			exit 1
+		done &&
+		test_line_count = 10 .git/reftable/tables.list
+	)
+'
+
+test_expect_success 'ref transaction: timeout acquiring tables.list lock' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit initial &&
+		>.git/reftable/tables.list.lock &&
+		test_must_fail git update-ref refs/heads/branch HEAD 2>err &&
+		test_grep "cannot lock references" err
+	)
+'
+
+test_expect_success 'ref transaction: retry acquiring tables.list lock' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit initial &&
+		LOCK=.git/reftable/tables.list.lock &&
+		>$LOCK &&
+		{
+			( sleep 1 && rm -f $LOCK ) &
+		} &&
+		git -c reftable.lockTimeout=5000 update-ref refs/heads/branch HEAD
+	)
+'
+
+# This test fails most of the time on Cygwin systems. The root cause is
+# that Windows does not allow us to rename the "tables.list.lock" file into
+# place when "tables.list" is open for reading by a concurrent process. We have
+# worked around that in our MinGW-based rename emulation, but the Cygwin
+# emulation seems to be insufficient.
+test_expect_success !CYGWIN 'ref transaction: many concurrent writers' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		# Set a high timeout. While a couple of seconds should be
+		# plenty, using the address sanitizer will significantly slow
+		# us down here. So we are aiming way higher than you would ever
+		# think is necessary just to keep us from flaking. We could
+		# also lock indefinitely by passing -1, but that could
+		# potentially block CI jobs indefinitely if there was a bug
+		# here.
+		git config set reftable.lockTimeout 300000 &&
+		test_commit --no-tag initial &&
+
+		head=$(git rev-parse HEAD) &&
+		test_seq -f "$head commit\trefs/heads/branch-%d" 100 >expect &&
+		printf "%s commit\trefs/heads/main\n" "$head" >>expect &&
+
+		for i in $(test_seq 100)
+		do
+			{ git update-ref refs/heads/branch-$i HEAD& } ||
+			return 1
+		done &&
+
+		wait &&
+		git for-each-ref --sort=v:refname >actual &&
+		test_cmp expect actual
+	)
+'
+
 test_expect_success 'pack-refs: compacts tables' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
 
 	test_commit -C repo A &&
 	ls -1 repo/.git/reftable >table-files &&
-	test_line_count = 4 table-files &&
-	test_line_count = 3 repo/.git/reftable/tables.list &&
+	test_line_count = 3 table-files &&
+	test_line_count = 2 repo/.git/reftable/tables.list &&
 
 	git -C repo pack-refs &&
 	ls -1 repo/.git/reftable >table-files &&
 	test_line_count = 2 table-files &&
 	test_line_count = 1 repo/.git/reftable/tables.list
 '
+
+test_expect_success 'pack-refs: compaction raises locking errors' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	test_commit -C repo A &&
+	touch repo/.git/reftable/tables.list.lock &&
+	cat >expect <<-EOF &&
+	error: unable to compact stack: data is locked
+	EOF
+	test_must_fail git -C repo pack-refs 2>err &&
+	test_cmp expect err
+'
+
+for command in pack-refs gc "maintenance run --task=pack-refs"
+do
+test_expect_success "$command: auto compaction" '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+
+		test_commit A &&
+
+		# We need a bit of setup to ensure that git-gc(1) actually
+		# triggers, and that it does not write anything to the refdb.
+		git config gc.auto 1 &&
+		git config gc.autoDetach 0 &&
+		git config gc.reflogExpire never &&
+		git config gc.reflogExpireUnreachable never &&
+		test_oid blob17_1 | git hash-object -w --stdin &&
+
+		# The tables should have been auto-compacted, and thus auto
+		# compaction should not have to do anything.
+		ls -1 .git/reftable >tables-expect &&
+		test_line_count = 3 tables-expect &&
+		git $command --auto &&
+		ls -1 .git/reftable >tables-actual &&
+		test_cmp tables-expect tables-actual &&
+
+		test_oid blob17_2 | git hash-object -w --stdin &&
+
+		# Lock all tables, write some refs. Auto-compaction will be
+		# unable to compact tables and thus fails gracefully,
+		# compacting only those tables which are not locked.
+		ls .git/reftable/*.ref | sort |
+		while read table
+		do
+			touch "$table.lock" &&
+			basename "$table" >>tables.expect || exit 1
+		done &&
+		test_line_count = 2 .git/reftable/tables.list &&
+		git branch B &&
+		git branch C &&
+
+		# The new tables are auto-compacted, but the locked tables are
+		# left intact.
+		test_line_count = 3 .git/reftable/tables.list &&
+		head -n 2 .git/reftable/tables.list >tables.head &&
+		test_cmp tables.expect tables.head &&
+
+		rm .git/reftable/*.lock &&
+		git $command --auto &&
+		test_line_count = 1 .git/reftable/tables.list
+	)
+'
+done
 
 test_expect_success 'pack-refs: prunes stale tables' '
 	test_when_finished "rm -rf repo" &&
@@ -370,26 +588,6 @@ test_expect_success 'pack-refs: does not prune non-table files' '
 	git -C repo pack-refs &&
 	test_path_is_file repo/.git/reftable/garbage
 '
-
-for umask in 002 022
-do
-	test_expect_success POSIXPERM 'pack-refs: honors core.sharedRepository' '
-		test_when_finished "rm -rf repo" &&
-		(
-			umask $umask &&
-			git init --shared=true repo &&
-			test_commit -C repo A &&
-			test_line_count = 3 repo/.git/reftable/tables.list
-		) &&
-		git -C repo pack-refs &&
-		test_expect_perms "-rw-rw-r--" repo/.git/reftable/tables.list &&
-		for table in repo/.git/reftable/*.ref
-		do
-			test_expect_perms "-rw-rw-r--" "$table" ||
-			return 1
-		done
-	'
-done
 
 test_expect_success 'packed-refs: writes are synced' '
 	test_when_finished "rm -rf repo" &&
@@ -451,9 +649,8 @@ test_expect_success 'basic: commit and list refs' '
 test_expect_success 'basic: can write large commit message' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
-	perl -e "
-		print \"this is a long commit message\" x 50000
-	" >commit-msg &&
+
+	awk "BEGIN { for (i = 0; i < 50000; i++) printf \"%s\", \"this is a long commit message\" }" >commit-msg &&
 	git -C repo commit --allow-empty --file=../commit-msg
 '
 
@@ -579,11 +776,11 @@ test_expect_success 'reflog: can delete separate reflog entries' '
 		test_commit file3 &&
 		test_commit file4 &&
 		git reflog >actual &&
-		grep file3 actual &&
+		test_grep file3 actual &&
 
 		git reflog delete HEAD@{1} &&
 		git reflog >actual &&
-		! grep file3 actual
+		test_grep ! file3 actual
 	)
 '
 
@@ -637,6 +834,41 @@ test_expect_success 'reflog: renaming branch writes reflog entry' '
 		echo refs/heads/after >expected &&
 		git symbolic-ref HEAD >actual &&
 		test_cmp expected actual
+	)
+'
+
+test_expect_success 'reflog: timezone offset is stored in minutes' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		GIT_COMMITTER_DATE="1234567890 -1200" git commit --allow-empty -m min &&
+		GIT_COMMITTER_DATE="1234567890 +0530" git commit --allow-empty -m east &&
+		GIT_COMMITTER_DATE="1234567890 -0830" git commit --allow-empty -m west &&
+		GIT_COMMITTER_DATE="1234567890 +1400" git commit --allow-empty -m max &&
+
+		# The reftable format specifies the timezone as the offset from
+		# UTC in minutes, whereas Git uses the parsed form of "+HHMM"
+		# internally. Verify that we do the conversion when writing.
+		for table in .git/reftable/*.ref
+		do
+			test-tool dump-reftable -t "$table" || return 1
+		done >dump &&
+		sed -n "s/^log{refs\/heads\/main([0-9]*) .* 1234567890 //p" dump >actual &&
+		cat >expect <<-\EOF &&
+		840
+		-510
+		330
+		-720
+		EOF
+		test_cmp expect actual &&
+
+		# And verify that we convert back when reading.
+		test-tool ref-store main for-each-reflog-ent refs/heads/main >entries &&
+		test_grep "1234567890 -1200	commit (initial): min" entries &&
+		test_grep "1234567890 +0530	commit: east" entries &&
+		test_grep "1234567890 -0830	commit: west" entries &&
+		test_grep "1234567890 +1400	commit: max" entries
 	)
 '
 
@@ -705,8 +937,8 @@ test_expect_success 'reflog: garbage collection deletes reflog entries' '
 		done &&
 		git reflog refs/heads/main >actual &&
 		test_line_count = 10 actual &&
-		grep "commit (initial): number 1" actual &&
-		grep "commit: number 10" actual &&
+		test_grep "commit (initial): number 1" actual &&
+		test_grep "commit: number 10" actual &&
 
 		git gc &&
 		git reflog refs/heads/main >actual &&
@@ -730,6 +962,39 @@ test_expect_success 'reflog: updates via HEAD update HEAD reflog' '
 	)
 '
 
+test_expect_success 'branch: copying branch with D/F conflict' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		git branch branch &&
+		cat >expect <<-EOF &&
+		error: ${SQ}refs/heads/branch${SQ} exists; cannot create ${SQ}refs/heads/branch/moved${SQ}
+		fatal: branch copy failed
+		EOF
+		test_must_fail git branch -c branch branch/moved 2>err &&
+		test_cmp expect err
+	)
+'
+
+test_expect_success 'branch: moving branch with D/F conflict' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit A &&
+		git branch branch &&
+		git branch conflict &&
+		cat >expect <<-EOF &&
+		error: ${SQ}refs/heads/conflict${SQ} exists; cannot create ${SQ}refs/heads/conflict/moved${SQ}
+		fatal: branch rename failed
+		EOF
+		test_must_fail git branch -m branch conflict/moved 2>err &&
+		test_cmp expect err
+	)
+'
+
 test_expect_success 'worktree: adding worktree creates separate stack' '
 	test_when_finished "rm -rf repo worktree" &&
 	git init repo &&
@@ -747,12 +1012,16 @@ test_expect_success 'worktree: pack-refs in main repo packs main refs' '
 	test_when_finished "rm -rf repo worktree" &&
 	git init repo &&
 	test_commit -C repo A &&
-	git -C repo worktree add ../worktree &&
 
-	test_line_count = 3 repo/.git/worktrees/worktree/reftable/tables.list &&
-	test_line_count = 4 repo/.git/reftable/tables.list &&
+	GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
+	git -C repo worktree add ../worktree &&
+	GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
+	git -C worktree update-ref refs/worktree/per-worktree HEAD &&
+
+	test_line_count = 4 repo/.git/worktrees/worktree/reftable/tables.list &&
+	test_line_count = 3 repo/.git/reftable/tables.list &&
 	git -C repo pack-refs &&
-	test_line_count = 3 repo/.git/worktrees/worktree/reftable/tables.list &&
+	test_line_count = 4 repo/.git/worktrees/worktree/reftable/tables.list &&
 	test_line_count = 1 repo/.git/reftable/tables.list
 '
 
@@ -760,13 +1029,17 @@ test_expect_success 'worktree: pack-refs in worktree packs worktree refs' '
 	test_when_finished "rm -rf repo worktree" &&
 	git init repo &&
 	test_commit -C repo A &&
-	git -C repo worktree add ../worktree &&
 
-	test_line_count = 3 repo/.git/worktrees/worktree/reftable/tables.list &&
-	test_line_count = 4 repo/.git/reftable/tables.list &&
+	GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
+	git -C repo worktree add ../worktree &&
+	GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
+	git -C worktree update-ref refs/worktree/per-worktree HEAD &&
+
+	test_line_count = 4 repo/.git/worktrees/worktree/reftable/tables.list &&
+	test_line_count = 3 repo/.git/reftable/tables.list &&
 	git -C worktree pack-refs &&
 	test_line_count = 1 repo/.git/worktrees/worktree/reftable/tables.list &&
-	test_line_count = 4 repo/.git/reftable/tables.list
+	test_line_count = 3 repo/.git/reftable/tables.list
 '
 
 test_expect_success 'worktree: creating shared ref updates main stack' '
@@ -780,6 +1053,7 @@ test_expect_success 'worktree: creating shared ref updates main stack' '
 	test_line_count = 1 repo/.git/worktrees/worktree/reftable/tables.list &&
 	test_line_count = 1 repo/.git/reftable/tables.list &&
 
+	GIT_TEST_REFTABLE_AUTOCOMPACTION=false \
 	git -C worktree update-ref refs/heads/shared HEAD &&
 	test_line_count = 1 repo/.git/worktrees/worktree/reftable/tables.list &&
 	test_line_count = 2 repo/.git/reftable/tables.list
@@ -894,6 +1168,34 @@ test_expect_success 'fetch: accessing FETCH_HEAD special ref works' '
 	git -C repo fetch ../sub &&
 	git -C repo rev-parse FETCH_HEAD >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'writes do not persist peeled value for invalid tags' '
+	test_when_finished rm -rf repo &&
+	git init repo &&
+	(
+		cd repo &&
+		git commit --allow-empty --message initial &&
+
+		# We cannot easily verify that the peeled value is not stored
+		# in the tables. Instead, we test this indirectly: we create
+		# two tags that both point to the same object, but they claim
+		# different object types. If we parse both tags we notice that
+		# the parsed tagged object has a mismatch between the two tags
+		# and bail out.
+		#
+		# If we instead use the persisted peeled value we would not
+		# even parse the tags. As such, we would not notice the
+		# discrepancy either and thus listing these tags would succeed.
+		git tag tag-1 -m "tag 1" &&
+		git cat-file tag tag-1 >raw-tag &&
+		sed "s/^type commit$/type blob/" <raw-tag >broken-tag &&
+		broken_tag_id=$(git hash-object -w -t tag broken-tag) &&
+		git update-ref refs/tags/tag-2 $broken_tag_id &&
+
+		test_must_fail git for-each-ref --format="%(*objectname)" refs/tags/ 2>err &&
+		test_grep "bad tag pointer" err
+	)
 '
 
 test_done

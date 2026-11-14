@@ -2,7 +2,6 @@
 
 test_description='remote push rejects are reported by client'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -20,6 +19,6 @@ test_expect_success 'setup' '
 
 test_expect_success 'push reports error' 'test_must_fail git push 2>stderr'
 
-test_expect_success 'individual ref reports error' 'grep rejected stderr'
+test_expect_success 'individual ref reports error' 'test_grep rejected stderr'
 
 test_done

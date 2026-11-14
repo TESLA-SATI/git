@@ -1,10 +1,12 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "config.h"
 #include "diff.h"
 #include "diff-merges.h"
 #include "commit.h"
 #include "preload-index.h"
-#include "repository.h"
 #include "revision.h"
 #include "setup.h"
 
@@ -14,17 +16,23 @@ static const char diff_cache_usage[] =
 "\n"
 COMMON_DIFF_OPTIONS_HELP;
 
-int cmd_diff_index(int argc, const char **argv, const char *prefix)
+int cmd_diff_index(int argc,
+		   const char **argv,
+		   const char *prefix,
+		   struct repository *repo UNUSED)
 {
 	struct rev_info rev;
 	unsigned int option = 0;
 	int i;
 	int result;
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(diff_cache_usage);
+	show_usage_if_asked(argc, argv, diff_cache_usage);
 
-	git_config(git_diff_basic_config, NULL); /* no "diff" UI options */
+	repo_config(the_repository, git_diff_basic_config, NULL); /* no "diff" UI options */
+
+	prepare_repo_settings(the_repository);
+	the_repository->settings.command_requires_full_index = 0;
+
 	repo_init_revisions(the_repository, &rev, prefix);
 	rev.abbrev = 0;
 	prefix = precompose_argv_prefix(argc, argv, prefix);
@@ -61,7 +69,7 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 	    rev.max_count != -1 || rev.min_age != -1 || rev.max_age != -1)
 		usage(diff_cache_usage);
 	if (!(option & DIFF_INDEX_CACHED)) {
-		setup_work_tree();
+		setup_work_tree(the_repository);
 		if (repo_read_index_preload(the_repository, &rev.diffopt.pathspec, 0) < 0) {
 			perror("repo_read_index_preload");
 			return -1;
@@ -71,7 +79,7 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 		return -1;
 	}
 	run_diff_index(&rev, option);
-	result = diff_result_code(&rev.diffopt);
+	result = diff_result_code(&rev);
 	release_revisions(&rev);
 	return result;
 }

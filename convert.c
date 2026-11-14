@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "advice.h"
 #include "config.h"
@@ -5,7 +8,7 @@
 #include "copy.h"
 #include "gettext.h"
 #include "hex.h"
-#include "object-store-ll.h"
+#include "object-file.h"
 #include "attr.h"
 #include "run-command.h"
 #include "quote.h"
@@ -322,6 +325,9 @@ static void trace_encoding(const char *context, const char *path,
 	struct strbuf trace = STRBUF_INIT;
 	int i;
 
+	if (!trace_want(&coe))
+		return;
+
 	strbuf_addf(&trace, "%s (%s, considered %s):\n", context, path, encoding);
 	for (i = 0; i < len && buf; ++i) {
 		strbuf_addf(
@@ -345,30 +351,32 @@ static int check_roundtrip(const char *enc_name)
 	 * space separated encodings (eg. "UTF-16, ASCII, CP1125").
 	 * Search for the given encoding in that string.
 	 */
-	const char *found = strcasestr(check_roundtrip_encoding, enc_name);
+	const char *encoding = check_roundtrip_encoding ?
+		check_roundtrip_encoding : "SHIFT-JIS";
+	const char *found = strcasestr(encoding, enc_name);
 	const char *next;
 	int len;
 	if (!found)
 		return 0;
 	next = found + strlen(enc_name);
-	len = strlen(check_roundtrip_encoding);
+	len = strlen(encoding);
 	return (found && (
 			/*
-			 * check that the found encoding is at the
-			 * beginning of check_roundtrip_encoding or
-			 * that it is prefixed with a space or comma
+			 * Check that the found encoding is at the beginning of
+			 * encoding or that it is prefixed with a space or
+			 * comma.
 			 */
-			found == check_roundtrip_encoding || (
+			found == encoding || (
 				(isspace(found[-1]) || found[-1] == ',')
 			)
 		) && (
 			/*
-			 * check that the found encoding is at the
-			 * end of check_roundtrip_encoding or
-			 * that it is suffixed with a space or comma
+			 * Check that the found encoding is at the end of
+			 * encoding or that it is suffixed with a space
+			 * or comma.
 			 */
-			next == check_roundtrip_encoding + len || (
-				next < check_roundtrip_encoding + len &&
+			next == encoding + len || (
+				next < encoding + len &&
 				(isspace(next[0]) || next[0] == ',')
 			)
 		));
@@ -956,7 +964,7 @@ int async_query_available_blobs(const char *cmd, struct string_list *available_p
 	while ((line = packet_read_line(process->out, NULL))) {
 		const char *path;
 		if (skip_prefix(line, "pathname=", &path))
-			string_list_insert(available_paths, xstrdup(path));
+			string_list_insert(available_paths, path);
 		else
 			; /* ignore unknown keys */
 	}
@@ -979,9 +987,9 @@ done:
 static struct convert_driver {
 	const char *name;
 	struct convert_driver *next;
-	const char *smudge;
-	const char *clean;
-	const char *process;
+	char *smudge;
+	char *clean;
+	char *process;
 	int required;
 } *user_convert, **user_convert_tail;
 
@@ -1046,14 +1054,20 @@ static int read_convert_config(const char *var, const char *value,
 	 * The command-line will not be interpolated in any way.
 	 */
 
-	if (!strcmp("smudge", key))
+	if (!strcmp("smudge", key)) {
+		FREE_AND_NULL(drv->smudge);
 		return git_config_string(&drv->smudge, var, value);
+	}
 
-	if (!strcmp("clean", key))
+	if (!strcmp("clean", key)) {
+		FREE_AND_NULL(drv->clean);
 		return git_config_string(&drv->clean, var, value);
+	}
 
-	if (!strcmp("process", key))
+	if (!strcmp("process", key)) {
+		FREE_AND_NULL(drv->process);
 		return git_config_string(&drv->process, var, value);
+	}
 
 	if (!strcmp("required", key)) {
 		drv->required = git_config_bool(var, value);
@@ -1108,7 +1122,8 @@ static int count_ident(const char *cp, unsigned long size)
 static int ident_to_git(const char *src, size_t len,
 			struct strbuf *buf, int ident)
 {
-	char *dst, *dollar;
+	char *dst;
+	const char *dollar;
 
 	if (!ident || (src && !count_ident(src, len)))
 		return 0;
@@ -1153,7 +1168,8 @@ static int ident_to_worktree(const char *src, size_t len,
 			     struct strbuf *buf, int ident)
 {
 	struct object_id oid;
-	char *to_free = NULL, *dollar, *spc;
+	char *to_free = NULL;
+	const char *dollar, *spc;
 	int cnt;
 
 	if (!ident)
@@ -1223,7 +1239,7 @@ static int ident_to_worktree(const char *src, size_t len,
 
 		/* step 4: substitute */
 		strbuf_addstr(buf, "Id: ");
-		strbuf_addstr(buf, oid_to_hex(&oid));
+		strbuf_add_oid_hex(buf, &oid);
 		strbuf_addstr(buf, " $");
 	}
 	strbuf_add(buf, src, len);
@@ -1312,7 +1328,7 @@ void convert_attrs(struct index_state *istate,
 					 "eol", "text", "working-tree-encoding",
 					 NULL);
 		user_convert_tail = &user_convert;
-		git_config(read_convert_config, NULL);
+		repo_config(the_repository, read_convert_config, NULL);
 	}
 
 	git_check_attr(istate, path, check);
@@ -1358,6 +1374,9 @@ void reset_parsed_attributes(void)
 	for (drv = user_convert; drv; drv = next) {
 		next = drv->next;
 		free((void *)drv->name);
+		free((void *)drv->smudge);
+		free((void *)drv->clean);
+		free((void *)drv->process);
 		free(drv);
 	}
 	user_convert = NULL;

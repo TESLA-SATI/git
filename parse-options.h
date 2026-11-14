@@ -3,8 +3,10 @@
 
 #include "gettext.h"
 
+struct repository;
+
 /**
- * Refer to Documentation/technical/api-parse-options.txt for the API doc.
+ * Refer to Documentation/technical/api-parse-options.adoc for the API doc.
  */
 
 enum parse_opt_type {
@@ -23,7 +25,7 @@ enum parse_opt_type {
 	/* options with arguments (usually) */
 	OPTION_STRING,
 	OPTION_INTEGER,
-	OPTION_MAGNITUDE,
+	OPTION_UNSIGNED,
 	OPTION_CALLBACK,
 	OPTION_LOWLEVEL_CALLBACK,
 	OPTION_FILENAME
@@ -49,13 +51,15 @@ enum parse_opt_option_flags {
 	PARSE_OPT_NODASH = 1 << 5,
 	PARSE_OPT_LITERAL_ARGHELP = 1 << 6,
 	PARSE_OPT_FROM_ALIAS = 1 << 7,
+	PARSE_OPT_EARLY = 1 << 8,	/* only for early_scan_options() */
 	PARSE_OPT_NOCOMPLETE = 1 << 9,
 	PARSE_OPT_COMP_ARG = 1 << 10,
 	PARSE_OPT_CMDMODE = 1 << 11,
 };
 
 enum parse_opt_result {
-	PARSE_OPT_COMPLETE = -3,
+	PARSE_OPT_COMPLETE = -4,
+	PARSE_OPT_HELP_ERROR = -3,
 	PARSE_OPT_HELP = -2,
 	PARSE_OPT_ERROR = -1,	/* must be the same as error() */
 	PARSE_OPT_DONE = 0,	/* fixed so that "return 0" works */
@@ -73,7 +77,7 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
 					      const char *arg, int unset);
 
 typedef int parse_opt_subcommand_fn(int argc, const char **argv,
-				    const char *prefix);
+				    const char *prefix, struct repository *repo);
 
 /*
  * `type`::
@@ -89,6 +93,10 @@ typedef int parse_opt_subcommand_fn(int argc, const char **argv,
  *
  * `value`::
  *   stores pointers to the values to be filled.
+ *
+ * `precision`::
+ *   precision of the integer pointed to by `value` in number of bytes. Should
+ *   typically be its `sizeof()`.
  *
  * `argh`::
  *   token to explain the kind of argument this option wants. Does not
@@ -111,6 +119,7 @@ typedef int parse_opt_subcommand_fn(int argc, const char **argv,
  *   PARSE_OPT_OPTARG: says that the argument is optional (not for BOOLEANs)
  *   PARSE_OPT_NOARG: says that this option does not take an argument
  *   PARSE_OPT_NONEG: says that this option cannot be negated
+ *                   (i.e. rejects "--no-<option>")
  *   PARSE_OPT_HIDDEN: this option is skipped in the default usage, and
  *                     shown only in the full usage.
  *   PARSE_OPT_LASTARG_DEFAULT: says that this option will take the default
@@ -149,6 +158,7 @@ struct option {
 	int short_name;
 	const char *long_name;
 	void *value;
+	size_t precision;
 	const char *argh;
 	const char *help;
 
@@ -165,6 +175,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG|(f), \
 	.callback = NULL, \
@@ -175,6 +186,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG|(f), \
 }
@@ -183,6 +195,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG | (f), \
 	.defval = (i), \
@@ -211,7 +224,8 @@ struct option {
 	.type = OPTION_INTEGER, \
 	.short_name = (s), \
 	.long_name = (l), \
-	.value = (v), \
+	.value = (v) + BARF_UNLESS_SIGNED(*(v)), \
+	.precision = sizeof(*v), \
 	.argh = N_("n"), \
 	.help = (h), \
 	.flags = (f), \
@@ -224,12 +238,18 @@ struct option {
 	.type = OPTION_GROUP, \
 	.help = (h), \
 }
+#define OPT_HIDDEN_GROUP(h) { \
+	.type = OPTION_GROUP, \
+	.help = (h), \
+	.flags = PARSE_OPT_HIDDEN, \
+}
 #define OPT_BIT(s, l, v, h, b)      OPT_BIT_F(s, l, v, h, b, 0)
 #define OPT_BITOP(s, l, v, h, set, clear) { \
 	.type = OPTION_BITOP, \
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG|PARSE_OPT_NONEG, \
 	.defval = (set), \
@@ -240,6 +260,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG, \
 	.defval = (b), \
@@ -252,6 +273,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG | PARSE_OPT_HIDDEN, \
 	.defval = 1, \
@@ -261,6 +283,7 @@ struct option {
 	.short_name = (s), \
 	.long_name = (l), \
 	.value = (v), \
+	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_CMDMODE|PARSE_OPT_NOARG|PARSE_OPT_NONEG | (f), \
 	.defval = (i), \
@@ -268,11 +291,12 @@ struct option {
 #define OPT_CMDMODE(s, l, v, h, i)  OPT_CMDMODE_F(s, l, v, h, i, 0)
 
 #define OPT_INTEGER(s, l, v, h)     OPT_INTEGER_F(s, l, v, h, 0)
-#define OPT_MAGNITUDE(s, l, v, h) { \
-	.type = OPTION_MAGNITUDE, \
+#define OPT_UNSIGNED(s, l, v, h) { \
+	.type = OPTION_UNSIGNED, \
 	.short_name = (s), \
 	.long_name = (l), \
-	.value = (v), \
+	.value = (v) + BARF_UNLESS_UNSIGNED(*(v)), \
+	.precision = sizeof(*v), \
 	.argh = N_("n"), \
 	.help = (h), \
 	.flags = PARSE_OPT_NONEG, \
@@ -351,21 +375,37 @@ struct option {
 	.callback = parse_opt_noop_cb, \
 }
 
-#define OPT_ALIAS(s, l, source_long_name) { \
+static char *parse_options_noop_ignored_value MAYBE_UNUSED;
+#define OPT_NOOP_ARG(s, l) { \
+	.type = OPTION_CALLBACK, \
+	.short_name = (s), \
+	.long_name = (l), \
+	.value = &parse_options_noop_ignored_value, \
+	.argh = "ignored", \
+	.help = N_("no-op (backward compatibility)"), \
+	.flags = PARSE_OPT_HIDDEN, \
+	.callback = parse_opt_noop_cb, \
+}
+
+#define OPT_ALIAS_F(s, l, source_long_name, f) { \
 	.type = OPTION_ALIAS, \
 	.short_name = (s), \
 	.long_name = (l), \
-	.value = (source_long_name), \
+	.value = (char *)(source_long_name), \
+	.flags = (f), \
 }
 
-#define OPT_SUBCOMMAND_F(l, v, fn, f) { \
+#define OPT_ALIAS(s, l, source_long_name) OPT_ALIAS_F(s, l, source_long_name, 0)
+
+#define OPT_SUBCOMMAND_F(l, v, fn, h, f) { \
 	.type = OPTION_SUBCOMMAND, \
 	.long_name = (l), \
 	.value = (v), \
+	.help = (h), \
 	.flags = (f), \
 	.subcommand_fn = (fn), \
 }
-#define OPT_SUBCOMMAND(l, v, fn)    OPT_SUBCOMMAND_F((l), (v), (fn), 0)
+#define OPT_SUBCOMMAND(l, v, fn)    OPT_SUBCOMMAND_F((l), (v), (fn), NULL, 0)
 
 /*
  * parse_options() will filter out the processed options and leave the
@@ -385,8 +425,23 @@ int parse_options(int argc, const char **argv, const char *prefix,
 		  const char * const usagestr[],
 		  enum parse_opt_flags flags);
 
+/*
+ * Return non-zero if `opt` takes a value, which means that it consumes
+ * the next argument when that value is not stuck to it with an '='.
+ *
+ * Note that an option with PARSE_OPT_LASTARG_DEFAULT is considered as
+ * taking a value here, even though it only consumes the next argument
+ * when it isn't the last one. Callers that care have to check for that
+ * flag themselves.
+ */
+int parse_options_takes_argument(const struct option *opt);
+
 NORETURN void usage_with_options(const char * const *usagestr,
 				 const struct option *options);
+
+void show_usage_with_options_if_asked(int ac, const char **av,
+				      const char * const *usage,
+				      const struct option *options);
 
 NORETURN void usage_msg_opt(const char *msg,
 			    const char * const *usagestr,
@@ -418,6 +473,15 @@ static inline void die_for_incompatible_opt3(int opt1, const char *opt1_name,
 				  0, "");
 }
 
+static inline void die_for_incompatible_opt2(int opt1, const char *opt1_name,
+					     int opt2, const char *opt2_name)
+{
+	die_for_incompatible_opt4(opt1, opt1_name,
+				  opt2, opt2_name,
+				  0, "",
+				  0, "");
+}
+
 /*
  * Use these assertions for callbacks that expect to be called with NONEG and
  * NOARG respectively, and do not otherwise handle the "unset" and "arg"
@@ -442,6 +506,103 @@ static inline void die_for_incompatible_opt3(int opt1, const char *opt1_name,
 	if(!(arg)) \
 		BUG("option callback expects an argument"); \
 } while(0)
+
+/*----- Early scan: scanning argv before the actual option parsing -----*/
+
+/*
+ * Some commands need to look at a few options before they can parse
+ * their command line for real, for example because the result decides
+ * whether a repository is needed at all.
+ *
+ * Such an early scan has to know which options take their value as a
+ * separate argument, or it could mistake such a value for an
+ * option. The functions below allow performing such early scans
+ * without being fooled by option values.
+ */
+
+/*
+ * Called by early_scan_options() for each argument matching a
+ * `struct option` with PARSE_OPT_EARLY set.
+ *
+ * - `option` is the matching option, (may point into a temporary
+ *   copy of the options, so must not be used after the scan,)
+ * - `value` its value, or NULL if it doesn't take one or if its value
+ *   is optional and wasn't given, as with PARSE_OPT_OPTARG, or with
+ *   PARSE_OPT_LASTARG_DEFAULT when the option is the last argument,
+ * - `unset` is 'true' for the negated form of the option (like
+ *   for parse_opt_cb()), in which case `value` is always NULL, and
+ * - `pos` the index of the option in argv.
+ *
+ * Returning a non-zero value stops the scan right after the option and
+ * its value, if any.
+ */
+typedef int early_scan_fn(const struct option *option, const char *value,
+			  bool unset, int pos, void *data);
+
+enum early_scan_flags {
+	EARLY_SCAN_STOP_AT_NON_OPTION = 1 << 0, /* Stop at any non option */
+};
+
+/*
+ * Scan `argv` for the options described by `option`, calling `fn` for
+ * each of those that have PARSE_OPT_EARLY set. `argv` is not
+ * modified.
+ *
+ * `fn` may be NULL when no option has PARSE_OPT_EARLY set, which is
+ * useful to only find out where the scan stops.
+ *
+ * The scan always stops at "--" and at "--end-of-options", as
+ * parse_options() always stops parsing options there too, whatever its
+ * flags. PARSE_OPT_KEEP_DASHDASH and PARSE_OPT_KEEP_UNKNOWN_OPT only
+ * decide if the terminator is left in argv, not if it terminates.
+ *
+ * Returns the index of the first argument not consumed by the scan,
+ * which is `argc` when the whole array was scanned.
+ *
+ * Long options are looked up the same way as parse_options() does,
+ * so their negated forms, their unambiguous abbreviations, unless
+ * GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS is set, and the OPTION_ALIAS
+ * entries standing for them are all recognized, and their value is
+ * skipped when they take one.
+ *
+ * To never misinterpret an option value as an option though, the scan
+ * stops at any argument it cannot reliably skip, that is:
+ *
+ *  - a short option, or a bundle of them,
+ *
+ *  - an unknown option, or an ambiguous or disallowed abbreviation,
+ *
+ *  - an option with a low-level callback, as such a callback may
+ *    consume any number of arguments,
+ *
+ *  - an option with a value stuck to it that parse_options() would
+ *    reject, like a negated option or a PARSE_OPT_NOARG one,
+ *
+ *  - an option requiring a value when it is the last argument, which
+ *    parse_options() would also reject.
+ *
+ * In all these cases, the scan can fail to see an option that
+ * parse_options() would accept, but it doesn't report an option that
+ * parse_options() would not, so that callers err on the safe side.
+ *
+ * This requires the scan to be told about the way the later
+ * parse_options() call treats its arguments though:
+ *
+ *  - when parse_options() is called with PARSE_OPT_STOP_AT_NON_OPTION
+ *    or with subcommands, callers should pass
+ *    EARLY_SCAN_STOP_AT_NON_OPTION,
+ *
+ *  - when parse_options() is called with PARSE_OPT_KEEP_UNKNOWN_OPT,
+ *    which disables abbreviations there but not here, callers should
+ *    not use the scan.
+ *
+ * Passing EARLY_SCAN_STOP_AT_NON_OPTION in other cases is safe, and
+ * useful when the caller rejects non-option arguments itself.
+ */
+int early_scan_options(int argc, const char **argv,
+		       const struct option *option,
+		       enum early_scan_flags flags,
+		       early_scan_fn *fn, void *data);
 
 /*----- incremental advanced APIs -----*/
 
@@ -582,6 +743,8 @@ int parse_opt_tracking_mode(const struct option *, const char *, int);
 #define OPT_PATHSPEC_FROM_FILE(v) OPT_FILENAME(0, "pathspec-from-file", v, N_("read pathspec from file"))
 #define OPT_PATHSPEC_FILE_NUL(v)  OPT_BOOL(0, "pathspec-file-nul", v, N_("with --pathspec-from-file, pathspec elements are separated with NUL character"))
 #define OPT_AUTOSTASH(v) OPT_BOOL(0, "autostash", v, N_("automatically stash/stash pop before and after"))
+#define OPT_DIFF_UNIFIED(v) OPT_INTEGER_F('U', "unified", v, N_("generate diffs with <n> lines context"), PARSE_OPT_NONEG)
+#define OPT_DIFF_INTERHUNK_CONTEXT(v) OPT_INTEGER_F(0, "inter-hunk-context", v, N_("show context between diff hunks up to the specified number of lines"), PARSE_OPT_NONEG)
 
 #define OPT_IPVERSION(v) \
 	OPT_SET_INT_F('4', "ipv4", (v), N_("use IPv4 addresses only"), \

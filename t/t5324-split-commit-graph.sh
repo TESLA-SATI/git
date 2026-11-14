@@ -2,7 +2,6 @@
 
 test_description='split commit graph'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-chunk.sh
 
@@ -13,7 +12,8 @@ test_expect_success 'setup repo' '
 	git init &&
 	git config core.commitGraph true &&
 	git config gc.writeCommitGraph false &&
-	infodir=".git/objects/info" &&
+	objdir=".git/objects" &&
+	infodir="$objdir/info" &&
 	graphdir="$infodir/commit-graphs" &&
 	test_oid_cache <<-EOM
 	shallow sha1:2132
@@ -202,7 +202,7 @@ then
 	graph_git_behavior 'alternate: commit 13 vs 6' commits/13 origin/commits/6 "fork"
 fi
 
-test_expect_success 'test merge stragety constants' '
+test_expect_success 'test merge strategy constants' '
 	git clone . merge-2 &&
 	(
 		cd merge-2 &&
@@ -297,7 +297,7 @@ test_expect_success 'verify notices chain slice which is bogus (base)' '
 		echo "garbage" >$base_file &&
 		test_must_fail git commit-graph verify 2>test_err &&
 		grep -v "^+" test_err >err &&
-		grep "commit-graph file is too small" err
+		test_grep "commit-graph file is too small" err
 	)
 '
 
@@ -310,7 +310,7 @@ test_expect_success 'verify notices chain slice which is bogus (tip)' '
 		echo "garbage" >$tip_file &&
 		test_must_fail git commit-graph verify 2>test_err &&
 		grep -v "^+" test_err >err &&
-		grep "commit-graph file is too small" err
+		test_grep "commit-graph file is too small" err
 	)
 '
 
@@ -379,7 +379,7 @@ test_expect_success 'verify notices too-short chain file' '
 		echo "garbage" >$graphdir/commit-graph-chain &&
 		test_must_fail git commit-graph verify 2>test_err &&
 		grep -v "^+" test_err >err &&
-		grep "commit-graph chain file too small" err
+		test_grep "commit-graph chain file too small" err
 	)
 '
 
@@ -401,7 +401,7 @@ test_expect_success 'verify across alternates' '
 	)
 '
 
-test_expect_success 'reader bounds-checks base-graph chunk' '
+test_expect_success PERL_TEST_HELPERS 'reader bounds-checks base-graph chunk' '
 	git clone --no-hardlinks . corrupt-base-chunk &&
 	(
 		cd corrupt-base-chunk &&
@@ -410,7 +410,7 @@ test_expect_success 'reader bounds-checks base-graph chunk' '
 		git -c core.commitGraph=false log >expect.out &&
 		git -c core.commitGraph=true log >out 2>err &&
 		test_cmp expect.out out &&
-		grep "commit-graph base graphs chunk is too small" err
+		test_grep "commit-graph base graphs chunk is too small" err
 	)
 '
 
@@ -421,7 +421,7 @@ test_expect_success 'add octopus merge' '
 	git commit-graph write --reachable --split &&
 	git commit-graph verify --progress 2>err &&
 	test_line_count = 1 err &&
-	grep "Verifying commits in commit graph: 100% (18/18)" err &&
+	test_grep "Verifying commits in commit graph: 100% (18/18)" err &&
 	test_grep ! warning err &&
 	test_line_count = 3 $graphdir/commit-graph-chain
 '
@@ -715,6 +715,53 @@ test_expect_success 'write generation data chunk when commit-graph chain is repl
 		verify_chain_files_exist $graphdir &&
 		graph_read_expect $(($NUM_FIRST_LAYER_COMMITS + $NUM_SECOND_LAYER_COMMITS)) &&
 		git commit-graph verify
+	)
+'
+
+test_expect_success 'incremental write reads topo levels from all layers' '
+	git init topo-from-lower &&
+	(
+		cd topo-from-lower &&
+
+		for i in $(test_seq 5)
+		do
+			test_commit base-$i || return 1
+		done &&
+		git commit-graph write --reachable &&
+
+		test_commit extra &&
+		git commit-graph write --reachable --split=no-merge &&
+
+		git checkout base-3 &&
+		test_commit new-branch &&
+
+		GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
+			git commit-graph write --reachable --split=no-merge &&
+
+		test_trace2_data commit-graph generation-dfs-steps 1 <trace.txt
+	)
+'
+
+test_expect_success 'temporary graph layer is discarded upon failure' '
+	git init layer-discard &&
+	(
+		cd layer-discard &&
+
+		test_commit A &&
+		test_commit B &&
+
+		# Intentionally remove commit "A" from the object store
+		# so that the commit-graph machinery fails to parse the
+		# parents of "B".
+		#
+		# This takes place after the commit-graph machinery has
+		# initialized a new temporary file to store the contents
+		# of the new graph layer, so will allow us to ensure
+		# that the temporary file is discarded upon failure.
+		rm $objdir/$(test_oid_to_path $(git rev-parse HEAD^)) &&
+
+		test_must_fail git commit-graph write --reachable --split &&
+		test_dir_is_empty $graphdir
 	)
 '
 

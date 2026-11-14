@@ -2,7 +2,6 @@
 
 test_description='merge fast-forward and up to date'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -85,6 +84,16 @@ test_expect_success 'merge fast-forward octopus' '
 	git reset --hard c0 &&
 	test_tick &&
 	git merge c1 c2 &&
+	expect=$(git rev-parse c2) &&
+	current=$(git rev-parse HEAD) &&
+	test "$expect" = "$current"
+'
+
+test_expect_success 'merge octopus already up to date' '
+
+	git reset --hard c2 &&
+	test_tick &&
+	git merge c0 c1 &&
 	expect=$(git rev-parse c2) &&
 	current=$(git rev-parse HEAD) &&
 	test "$expect" = "$current"

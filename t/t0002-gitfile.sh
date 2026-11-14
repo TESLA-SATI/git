@@ -7,7 +7,6 @@ Verify that plumbing commands work when .git is a file
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 objpath() {
@@ -28,7 +27,7 @@ test_expect_success 'bad setup: invalid .git file format' '
 test_expect_success 'bad setup: invalid .git file path' '
 	echo "gitdir: $REAL.not" >.git &&
 	test_must_fail git rev-parse 2>.err &&
-	test_grep "not a git repository" .err
+	test_grep "gitfile does not point to a valid repository" .err
 '
 
 test_expect_success 'final setup + check rev-parse --git-dir' '

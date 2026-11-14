@@ -5,7 +5,6 @@ test_description='restore basic functionality'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -217,7 +216,7 @@ test_expect_success 'restore with merge options are incompatible with certain op
 		"--staged --worktree --conflict=zdiff3"
 	do
 		test_must_fail git restore $opts . 2>err &&
-		grep "cannot be used" err || return
+		test_grep "cannot be used" err || return
 	done
 '
 

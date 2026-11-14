@@ -1,8 +1,11 @@
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
+#include "environment.h"
 #include "gettext.h"
 #include "config.h"
 #include "hex.h"
-#include "object-store-ll.h"
+#include "odb.h"
 #include "strbuf.h"
 #include "xdiff-interface.h"
 #include "xdiff/xtypes.h"
@@ -50,7 +53,7 @@ static int consume_one(void *priv_, char *s, unsigned long size)
 	return 0;
 }
 
-static int xdiff_outf(void *priv_, mmbuffer_t *mb, int nbuf)
+static int xdiff_outf(void *priv_, mmfile_t *mb, int nbuf)
 {
 	struct xdiff_emit_state *priv = priv_;
 	int i;
@@ -163,8 +166,9 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 	if (!(f = fopen(filename, "rb")))
 		return error_errno("Could not open %s", filename);
 	sz = xsize_t(st.st_size);
-	ptr->ptr = xmalloc(sz ? sz : 1);
+	ptr->ptr = xmallocz(sz);
 	if (sz && fread(ptr->ptr, sz, 1, f) != 1) {
+		FREE_AND_NULL(ptr->ptr);
 		fclose(f);
 		return error("Could not read %s", filename);
 	}
@@ -173,18 +177,19 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 	return 0;
 }
 
-void read_mmblob(mmfile_t *ptr, const struct object_id *oid)
+void read_mmblob(mmfile_t *ptr, struct object_database *odb,
+		 const struct object_id *oid)
 {
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 
-	if (oideq(oid, null_oid())) {
+	if (is_null_oid(oid)) {
 		ptr->ptr = xstrdup("");
 		ptr->size = 0;
 		return;
 	}
 
-	ptr->ptr = repo_read_object_file(the_repository, oid, &type, &size);
+	ptr->ptr = odb_read_object(odb, oid, &type, &size);
 	if (!ptr->ptr || type != OBJ_BLOB)
 		die("unable to read blob object %s", oid_to_hex(oid));
 	ptr->size = size;
@@ -296,7 +301,7 @@ void xdiff_clear_find_func(xdemitconf_t *xecfg)
 
 unsigned long xdiff_hash_string(const char *s, size_t len, long flags)
 {
-	return xdl_hash_record(&s, s + len, flags);
+	return xdl_hash_record((uint8_t const**)&s, (uint8_t const*)s + len, flags);
 }
 
 int xdiff_compare_lines(const char *l1, long s1,
@@ -319,6 +324,18 @@ int parse_conflict_style_name(const char *value)
 	 */
 	else
 		return -1;
+}
+
+const char *conflict_style_name(int style)
+{
+	switch (style) {
+	case XDL_MERGE_DIFF3:
+		return "diff3";
+	case XDL_MERGE_ZEALOUS_DIFF3:
+		return "zdiff3";
+	default:
+		return "merge";
+	}
 }
 
 int git_xmerge_style = -1;

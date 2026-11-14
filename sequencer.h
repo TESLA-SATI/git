@@ -3,6 +3,7 @@
 
 #include "strbuf.h"
 #include "strvec.h"
+#include "stash.h"
 #include "wt-status.h"
 
 struct commit;
@@ -31,6 +32,9 @@ enum commit_msg_cleanup_mode {
 	COMMIT_MSG_CLEANUP_ALL
 };
 
+struct replay_ctx;
+struct replay_ctx* replay_ctx_new(void);
+
 struct replay_opts {
 	enum replay_action action;
 
@@ -54,6 +58,8 @@ struct replay_opts {
 	int ignore_date;
 	int commit_use_reference;
 
+	struct strvec trailer_args;
+
 	int mainline;
 
 	char *gpg_sign;
@@ -68,10 +74,6 @@ struct replay_opts {
 	/* Reflog */
 	char *reflog_action;
 
-	/* Used by fixup/squash */
-	struct strbuf current_fixups;
-	int current_fixup_count;
-
 	/* placeholder commit for -i --root */
 	struct object_id squash_onto;
 	int have_squash_onto;
@@ -80,13 +82,14 @@ struct replay_opts {
 	struct rev_info *revs;
 
 	/* Private use */
-	const char *reflog_message;
+	struct replay_ctx *ctx;
 };
 #define REPLAY_OPTS_INIT {			\
 	.edit = -1,				\
 	.action = -1,				\
-	.current_fixups = STRBUF_INIT,		\
+	.trailer_args = STRVEC_INIT,		\
 	.xopts = STRVEC_INIT,			\
+	.ctx = replay_ctx_new(),		\
 }
 
 /*
@@ -117,6 +120,13 @@ enum todo_command {
 	TODO_COMMENT
 };
 
+/* Bits for the "flags" member of struct todo_item */
+enum todo_item_flags {
+	TODO_EDIT_MERGE_MSG    = (1 << 0),
+	TODO_REPLACE_FIXUP_MSG = (1 << 1),
+	TODO_EDIT_FIXUP_MSG    = (1 << 2),
+};
+
 struct todo_item {
 	enum todo_command command;
 	struct commit *commit;
@@ -137,8 +147,8 @@ struct todo_list {
 	.buf = STRBUF_INIT, \
 }
 
-int todo_list_parse_insn_buffer(struct repository *r, char *buf,
-				struct todo_list *todo_list);
+int todo_list_parse_insn_buffer(struct repository *r, struct replay_opts *opts,
+				char *buf, struct todo_list *todo_list);
 int todo_list_write_to_file(struct repository *r, struct todo_list *todo_list,
 			    const char *file, const char *shortrevisions,
 			    const char *shortonto, int num, unsigned flags);
@@ -187,8 +197,8 @@ int sequencer_remove_state(struct replay_opts *opts);
 #define TODO_LIST_REAPPLY_CHERRY_PICKS (1U << 7)
 #define TODO_LIST_WARN_SKIPPED_CHERRY_PICKS (1U << 8)
 
-int sequencer_make_script(struct repository *r, struct strbuf *out, int argc,
-			  const char **argv, unsigned flags);
+int sequencer_make_script(struct repository *r, struct strbuf *out,
+			  struct strvec *argv, unsigned flags);
 
 int complete_action(struct repository *r, struct replay_opts *opts, unsigned flags,
 		    const char *shortrevisions, const char *onto_name,
@@ -205,6 +215,29 @@ int todo_list_rearrange_squash(struct todo_list *todo_list);
  * and the new signoff will be spliced into the buffer before those bytes.
  */
 void append_signoff(struct strbuf *msgbuf, size_t ignore_footer, unsigned flag);
+
+/*
+ * Append the "This is a combination of N commits." banner that "git rebase
+ * -i" writes at the top of a squashed commit's message, commented out with
+ * the comment character.
+ */
+void add_squash_combination_header(struct strbuf *buf, int n);
+
+/*
+ * Append the header (1-based N) that "git rebase -i" writes above each message
+ * when squashing, commented out with the comment character. With SKIP it reads
+ * "The ... commit message will be skipped" for a message that is dropped (a
+ * fixup), otherwise "This is the ... commit message".
+ */
+void add_squash_message_header(struct strbuf *buf, int n, int skip);
+
+/*
+ * Return the length of the leading subject of BODY when it should be commented
+ * out in a squash message, or 0 otherwise. An "amend!" subject always
+ * qualifies; "squash!" and "fixup!" subjects only when SQUASHING, since a
+ * plain fixup chain keeps them.
+ */
+size_t squash_subject_comment_len(const char *body, int squashing);
 
 void append_conflicts_hint(struct index_state *istate,
 		struct strbuf *msgbuf, enum commit_msg_cleanup_mode cleanup_mode);
@@ -227,12 +260,19 @@ void commit_post_rewrite(struct repository *r,
 			 const struct object_id *new_head);
 
 void create_autostash(struct repository *r, const char *path);
-void create_autostash_ref(struct repository *r, const char *refname);
-int save_autostash(const char *path);
-int save_autostash_ref(struct repository *r, const char *refname);
-int apply_autostash(const char *path);
-int apply_autostash_oid(const char *stash_oid);
-int apply_autostash_ref(struct repository *r, const char *refname);
+void create_autostash_ref(struct repository *r, const char *refname,
+			  const char *message, bool silent);
+enum stash_apply_result save_autostash(const char *path);
+enum stash_apply_result save_autostash_ref(struct repository *r,
+					   const char *refname);
+enum stash_apply_result apply_autostash(const char *path);
+enum stash_apply_result apply_autostash_oid(const char *stash_oid);
+enum stash_apply_result apply_autostash_ref(struct repository *r,
+					    const char *refname,
+					    const char *label_ours,
+					    const char *label_theirs,
+					    const char *label_base,
+					    const char *stash_msg);
 
 #define SUMMARY_INITIAL_COMMIT   (1 << 0)
 #define SUMMARY_SHOW_AUTHOR_DATE (1 << 1)
@@ -260,6 +300,14 @@ int read_author_script(const char *path, char **name, char **email, char **date,
 int write_basic_state(struct replay_opts *opts, const char *head_name,
 		      struct commit *onto, const struct object_id *orig_head);
 void sequencer_post_commit_cleanup(struct repository *r, int verbose);
+
+/*
+ * Try to parse the todo command pointed to by *p. On success sets cmd,
+ * advances p and returns true. On failure returns false, leaves p and
+ * cmd unchanged.
+ */
+bool sequencer_parse_todo_command(const char **p, enum todo_command *cmd);
+
 int sequencer_get_last_command(struct repository* r,
 			       enum replay_action *action);
 int sequencer_determine_whence(struct repository *r, enum commit_whence *whence);
@@ -271,5 +319,18 @@ int sequencer_determine_whence(struct repository *r, enum commit_whence *whence)
  * Localized to a worktree's git dir.
  */
 int sequencer_get_update_refs_state(const char *wt_dir, struct string_list *refs);
+
+/*
+ * Format a revert commit message with appropriate 'Revert "<subject>"' or
+ * 'Reapply "<subject>"' prefix and 'This reverts commit <ref>.' body.
+ * When use_commit_reference is set, <ref> is an abbreviated hash with
+ * subject and date; otherwise the full hex hash is used.
+ */
+void sequencer_format_revert_message(struct repository *r,
+				     const char *subject,
+				     const struct commit *commit,
+				     const struct commit *parent,
+				     bool use_commit_reference,
+				     struct strbuf *message);
 
 #endif /* SEQUENCER_H */

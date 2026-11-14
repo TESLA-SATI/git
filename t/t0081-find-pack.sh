@@ -2,7 +2,6 @@
 
 test_description='test `test-tool find-pack`'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -33,7 +32,7 @@ test_expect_success 'repack everything into a single packfile' '
 		".git/objects/pack/pack-"*".pack") true ;;
 		*) false ;;
 	esac &&
-	test -f "$head_commit_pack" &&
+	test_path_is_file "$head_commit_pack" &&
 
 	# Everything is in the same pack
 	test "$head_commit_pack" = "$head_tree_pack" &&
@@ -53,22 +52,23 @@ test_expect_success 'add more packfiles' '
 
 	# HEAD^{tree} is in 2 packfiles
 	test-tool find-pack HEAD^{tree} >head_tree_packs &&
-	grep "$head_commit_pack" head_tree_packs &&
-	grep mypackname1 head_tree_packs &&
-	! grep mypackname2 head_tree_packs &&
+	test_grep "$head_commit_pack" head_tree_packs &&
+	test_grep mypackname1 head_tree_packs &&
+	test_grep ! mypackname2 head_tree_packs &&
 	test-tool find-pack --check-count 2 HEAD^{tree} &&
 	! test-tool find-pack --check-count 1 HEAD^{tree} &&
 
 	# HEAD:five.t is also in 2 packfiles
 	test-tool find-pack HEAD:five.t >five_packs &&
-	grep "$head_commit_pack" five_packs &&
-	! grep mypackname1 five_packs &&
-	grep mypackname2 five_packs &&
+	test_grep "$head_commit_pack" five_packs &&
+	test_grep ! mypackname1 five_packs &&
+	test_grep mypackname2 five_packs &&
 	test-tool find-pack -c 2 HEAD:five.t &&
 	! test-tool find-pack --check-count=0 HEAD:five.t
 '
 
 test_expect_success 'add more commits (as loose objects)' '
+	test_config maintenance.auto false &&
 	test_commit six &&
 	test_commit seven &&
 

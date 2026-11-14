@@ -3,7 +3,10 @@
  *
  * Copyright (c) 2006 Junio C Hamano
  */
-#define USE_THE_INDEX_VARIABLE
+
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "config.h"
 #include "ewah/ewok.h"
@@ -32,7 +35,7 @@ static const char builtin_diff_usage[] =
 "   or: git diff [<options>] [--merge-base] <commit> [<commit>...] <commit> [--] [<path>...]\n"
 "   or: git diff [<options>] <commit>...<commit> [--] [<path>...]\n"
 "   or: git diff [<options>] <blob> <blob>\n"
-"   or: git diff [<options>] --no-index [--] <path> <path>"
+"   or: git diff [<options>] --no-index [--] <path> <path> [<pathspec>...]"
 "\n"
 COMMON_DIFF_OPTIONS_HELP;
 
@@ -101,7 +104,7 @@ static void builtin_diff_b_f(struct rev_info *revs,
 
 	stuff_change(&revs->diffopt,
 		     blob[0]->mode, canon_mode(st.st_mode),
-		     &blob[0]->item->oid, null_oid(),
+		     &blob[0]->item->oid, null_oid(the_hash_algo),
 		     1, 0,
 		     blob[0]->path ? blob[0]->path : path,
 		     path);
@@ -156,7 +159,7 @@ static void builtin_diff_index(struct rev_info *revs,
 	    revs->max_age != -1)
 		usage(builtin_diff_usage);
 	if (!(option & DIFF_INDEX_CACHED)) {
-		setup_work_tree();
+		setup_work_tree(the_repository);
 		if (repo_read_index_preload(the_repository,
 					    &revs->diffopt.pathspec, 0) < 0) {
 			die_errno("repo_read_index_preload");
@@ -239,9 +242,9 @@ static void refresh_index_quietly(void)
 	fd = repo_hold_locked_index(the_repository, &lock_file, 0);
 	if (fd < 0)
 		return;
-	discard_index(&the_index);
+	discard_index(the_repository->index);
 	repo_read_index(the_repository);
-	refresh_index(&the_index, REFRESH_QUIET|REFRESH_UNMERGED, NULL, NULL,
+	refresh_index(the_repository->index, REFRESH_QUIET|REFRESH_UNMERGED, NULL, NULL,
 		      NULL);
 	repo_update_index_if_able(the_repository, &lock_file);
 }
@@ -278,7 +281,7 @@ static void builtin_diff_files(struct rev_info *revs, int argc, const char **arg
 	    (revs->diffopt.output_format & DIFF_FORMAT_PATCH))
 		diff_merges_set_dense_combined_if_unset(revs);
 
-	setup_work_tree();
+	setup_work_tree(the_repository);
 	if (repo_read_index_preload(the_repository, &revs->diffopt.pathspec,
 				    0) < 0) {
 		die_errno("repo_read_index_preload");
@@ -388,7 +391,15 @@ static void symdiff_prepare(struct rev_info *rev, struct symdiff *sym)
 	sym->skip = map;
 }
 
-int cmd_diff(int argc, const char **argv, const char *prefix)
+static void symdiff_release(struct symdiff *sdiff)
+{
+	bitmap_free(sdiff->skip);
+}
+
+int cmd_diff(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repo UNUSED)
 {
 	int i;
 	struct rev_info rev;
@@ -444,7 +455,7 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 			break;
 	}
 
-	prefix = setup_git_directory_gently(&nongit);
+	prefix = setup_git_directory_gently(the_repository, &nongit);
 
 	if (!nongit) {
 		prepare_repo_settings(the_repository);
@@ -460,13 +471,37 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 		 * as a colourful "diff" replacement.
 		 */
 		if (nongit || ((argc == i + 2) &&
-			       (!path_inside_repo(prefix, argv[i]) ||
-				!path_inside_repo(prefix, argv[i + 1]))))
+			       (!path_inside_repo(the_repository, prefix, argv[i]) ||
+				!path_inside_repo(the_repository, prefix, argv[i + 1]))))
 			no_index = DIFF_NO_INDEX_IMPLICIT;
 	}
 
+	/*
+	 * When operating outside of a Git repository we need to have a hash
+	 * algorithm at hand so that we can generate the blob hashes. We
+	 * default to SHA1 here, but may eventually want to change this to be
+	 * configurable via a command line option.
+	 */
+	if (nongit)
+		repo_set_hash_algo(the_repository, GIT_HASH_DEFAULT);
+
 	init_diff_ui_defaults();
-	git_config(git_diff_ui_config, NULL);
+	repo_config(the_repository, git_diff_ui_config, NULL);
+
+	/*
+	 * If we are ignoring the fact that our current directory may
+	 * be part of a working tree controlled by a Git repository to
+	 * pretend to be a "better GNU diff", we should undo the
+	 * effect of the setup code that did a chdir() to the top of
+	 * the working tree.  Where we came from is recorded in the
+	 * prefix.
+	 */
+	if (no_index && prefix) {
+		if (chdir(prefix))
+			die(_("cannot come back to cwd"));
+		prefix = NULL;
+	}
+
 	prefix = precompose_argv_prefix(argc, argv, prefix);
 
 	repo_init_revisions(the_repository, &rev, prefix);
@@ -478,7 +513,8 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 
 	/* If this is a no-index diff, just run it and exit there. */
 	if (no_index)
-		exit(diff_no_index(&rev, no_index == DIFF_NO_INDEX_IMPLICIT,
+		exit(diff_no_index(&rev, the_repository->hash_algo,
+				   no_index == DIFF_NO_INDEX_IMPLICIT,
 				   argc, argv));
 
 
@@ -543,9 +579,13 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 		obj = deref_tag(the_repository, obj, NULL, 0);
 		if (!obj)
 			die(_("invalid object '%s' given."), name);
-		if (obj->type == OBJ_COMMIT)
-			obj = &repo_get_commit_tree(the_repository,
-						    ((struct commit *)obj))->object;
+		if (obj->type == OBJ_COMMIT) {
+			struct tree *tree = repo_get_commit_tree(
+				the_repository, (struct commit *)obj);
+			if (!tree)
+				die(_("unable to read tree object for commit '%s'"), name);
+			obj = &tree->object;
+		}
 
 		if (obj->type == OBJ_TREE) {
 			if (sdiff.skip && bitmap_get(sdiff.skip, i))
@@ -605,11 +645,11 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 		builtin_diff_combined(&rev, argc, argv,
 				      ent.objects, ent.nr,
 				      first_non_parent);
-	result = diff_result_code(&rev.diffopt);
+	result = diff_result_code(&rev);
 	if (1 < rev.diffopt.skip_stat_unmatch)
 		refresh_index_quietly();
 	release_revisions(&rev);
 	object_array_clear(&ent);
-	UNLEAK(blob);
+	symdiff_release(&sdiff);
 	return result;
 }

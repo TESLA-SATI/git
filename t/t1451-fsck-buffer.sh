@@ -15,7 +15,6 @@ These tests _might_ catch such overruns in normal use, but should be run with
 ASan or valgrind for more confidence.
 '
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # the general idea for tags and commits is to build up the "base" file
@@ -47,7 +46,7 @@ check () {
 			echo "$content"
 		} >input &&
 		test_must_fail git hash-object -t "$type" input 2>err &&
-		grep "$fsck" err
+		test_grep "$fsck" err
 	'
 }
 
@@ -126,7 +125,7 @@ ident_checks tag tagger
 test_expect_success 'truncated tree (short hash)' '
 	printf "100644 foo\0\1\1\1\1" >input &&
 	test_must_fail git hash-object -t tree input 2>err &&
-	grep badTree err
+	test_grep badTree err
 '
 
 test_expect_success 'truncated tree (missing nul)' '
@@ -136,7 +135,7 @@ test_expect_success 'truncated tree (missing nul)' '
 	# parser does not walk past the end of the buffer).
 	printf "100644 a long filename, or a hash with missing nul?" >input &&
 	test_must_fail git hash-object -t tree input 2>err &&
-	grep badTree err
+	test_grep badTree err
 '
 
 test_done

@@ -1,5 +1,6 @@
 #include "builtin.h"
 #include "config.h"
+#include "environment.h"
 #include "hex.h"
 #include "pkt-line.h"
 #include "run-command.h"
@@ -147,9 +148,12 @@ static int send_pack_config(const char *k, const char *v,
 	return git_default_config(k, v, ctx, cb);
 }
 
-int cmd_send_pack(int argc, const char **argv, const char *prefix)
+int cmd_send_pack(int argc,
+		  const char **argv,
+		  const char *prefix,
+		  struct repository *repo)
 {
-	struct refspec rs = REFSPEC_INIT_PUSH;
+	struct refspec rs;
 	const char *remote_name = NULL;
 	struct remote *remote = NULL;
 	const char *dest = NULL;
@@ -208,8 +212,11 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		OPT_END()
 	};
 
-	git_config(send_pack_config, NULL);
+	repo_config(repo, send_pack_config, NULL);
 	argc = parse_options(argc, argv, prefix, options, send_pack_usage, 0);
+
+	refspec_init_push(&rs, repo->hash_algo);
+
 	if (argc > 0) {
 		dest = argv[0];
 		refspec_appendn(&rs, argv + 1, argc - 1);
@@ -269,8 +276,9 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		fd[0] = 0;
 		fd[1] = 1;
 	} else {
-		conn = git_connect(fd, dest, "git-receive-pack", receivepack,
-			args.verbose ? CONNECT_VERBOSE : 0);
+		conn = git_connect(fd, dest, GIT_CONNECT_RECEIVE_PACK,
+				   receivepack,
+				   args.verbose ? CONNECT_VERBOSE : 0);
 	}
 
 	packet_reader_init(&reader, fd[0], NULL, 0,
@@ -301,9 +309,10 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		flags |= MATCH_REFS_MIRROR;
 
 	/* match them up */
-	if (match_push_refs(local_refs, &remote_refs, &rs, flags))
-		return -1;
-
+	if (match_push_refs(local_refs, &remote_refs, &rs, flags)) {
+		ret = -1;
+		goto cleanup;
+	}
 	if (!is_empty_cas(&cas))
 		apply_push_cas(&cas, remote, remote_refs);
 
@@ -313,7 +322,7 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 	set_ref_status_for_push(remote_refs, args.send_mirror,
 		args.force_update);
 
-	ret = send_pack(&args, fd, conn, remote_refs, &extra_have);
+	ret = send_pack(repo, &args, fd, conn, remote_refs, &extra_have);
 
 	if (helper_status)
 		print_helper_status(remote_refs);
@@ -336,5 +345,13 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		/* stable plumbing output; do not modify or localize */
 		fprintf(stderr, "Everything up-to-date\n");
 
+cleanup:
+	string_list_clear(&push_options, 0);
+	free_refs(remote_refs);
+	free_refs(local_refs);
+	refspec_clear(&rs);
+	oid_array_clear(&extra_have);
+	oid_array_clear(&shallow);
+	clear_cas_option(&cas);
 	return ret;
 }

@@ -5,6 +5,8 @@
 
 #include "strvec.h"
 
+struct repository;
+
 /**
  * The run-command API offers a versatile tool to run sub-processes with
  * redirected input and output as well as with a modified environment
@@ -136,11 +138,20 @@ struct child_process {
 	 * want to repack because that would delete `.pack` files (and on
 	 * Windows, you cannot delete files that are still in use).
 	 */
-	unsigned close_object_store:1;
+	struct object_database *odb_to_close;
 
 	unsigned stdout_to_stderr:1;
 	unsigned clean_on_exit:1;
 	unsigned wait_after_clean:1;
+
+	/**
+	 * Close file descriptors 3 and above in the child after forking
+	 * but before exec.  This prevents the child from inheriting
+	 * pipe endpoints or other descriptors from the parent
+	 * environment (e.g., the test harness).
+	 */
+	unsigned close_fd_above_stderr:1;
+
 	void (*clean_on_exit_handler)(struct child_process *process);
 };
 
@@ -196,6 +207,11 @@ int is_executable(const char *name);
 int exists_in_PATH(const char *command);
 
 /**
+ * Return the path that is used to execute Unix shell command-lines.
+ */
+char *git_shell_path(void);
+
+/**
  * Start a sub-process. Takes a pointer to a `struct child_process`
  * that specifies the details and returns pipe FDs (if requested).
  * See below for details.
@@ -218,9 +234,17 @@ int finish_command_in_signal(struct child_process *);
 int run_command(struct child_process *);
 
 /*
+ * Prepare a `struct child_process` to run auto-maintenance. Returns 1 if the
+ * process has been prepared and is ready to run, or 0 in case auto-maintenance
+ * should be skipped.
+ */
+int prepare_auto_maintenance(struct repository *r, int quiet,
+			     struct child_process *maint);
+
+/*
  * Trigger an auto-gc
  */
-int run_auto_maintenance(int quiet);
+int run_auto_maintenance(struct repository *r, int quiet);
 
 /**
  * Execute the given command, sending "in" to its stdin, and capturing its
@@ -409,6 +433,21 @@ typedef int (*start_failure_fn)(struct strbuf *out,
 				void *pp_task_cb);
 
 /**
+ * This callback is repeatedly called on every child process who requests
+ * start_command() to create a pipe by setting child_process.in < 0.
+ *
+ * pp_cb is the callback cookie as passed into run_processes_parallel, and
+ * pp_task_cb is the callback cookie as passed into get_next_task_fn.
+ *
+ * Returns < 0 for error
+ * Returns == 0 when there is more data to be fed (will be called again)
+ * Returns > 0 when finished (child closed fd or no more data to be fed)
+ */
+typedef int (*feed_pipe_fn)(int child_in,
+				void *pp_cb,
+				void *pp_task_cb);
+
+/**
  * This callback is called on every child process that finished processing.
  *
  * See run_processes_parallel() below for a discussion of the "struct
@@ -461,6 +500,12 @@ struct run_process_parallel_opts
 	 */
 	start_failure_fn start_failure;
 
+	/*
+	 * feed_pipe: see feed_pipe_fn() above. This can be NULL to omit any
+	 * special handling.
+	 */
+	feed_pipe_fn feed_pipe;
+
 	/**
 	 * task_finished: See task_finished_fn() above. This can be
 	 * NULL to omit any special handling.
@@ -498,12 +543,17 @@ struct run_process_parallel_opts
 void run_processes_parallel(const struct run_process_parallel_opts *opts);
 
 /**
+ * Unset all local-repo GIT_* variables in env; see local_repo_env in
+ * environment.h. GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT are preserved
+ * to pass -c and --config-env options from the parent process.
+ */
+void sanitize_repo_env(struct strvec *env);
+
+/**
  * Convenience function which prepares env for a command to be run in a
- * new repo. This adds all GIT_* environment variables to env with the
- * exception of GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT (which cause the
- * corresponding environment variables to be unset in the subprocess) and adds
- * an environment variable pointing to new_git_dir. See local_repo_env in
- * environment.h for more information.
+ * new repo. This removes variables pointing to the local repository (using
+ * sanitize_repo_env() above), and adds an environment variable pointing to
+ * new_git_dir.
  */
 void prepare_other_repo_env(struct strvec *env, const char *new_git_dir);
 
@@ -523,7 +573,7 @@ enum start_bg_result {
 	/* timeout expired waiting for child to become "ready" */
 	SBGR_TIMEOUT,
 
-	/* child process exited or was signalled before becomming "ready" */
+	/* child process exited or was signalled before becoming "ready" */
 	SBGR_DIED,
 };
 

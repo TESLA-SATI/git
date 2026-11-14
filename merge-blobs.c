@@ -1,17 +1,19 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "merge-ll.h"
 #include "blob.h"
 #include "merge-blobs.h"
-#include "object-store-ll.h"
+#include "odb.h"
 
 static int fill_mmfile_blob(mmfile_t *f, struct blob *obj)
 {
 	void *buf;
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 
-	buf = repo_read_object_file(the_repository, &obj->object.oid, &type,
-				    &size);
+	buf = odb_read_object(the_repository->objects, &obj->object.oid,
+			      &type, &size);
 	if (!buf)
 		return -1;
 	if (type != OBJ_BLOB) {
@@ -33,10 +35,10 @@ static void *three_way_filemerge(struct index_state *istate,
 				 mmfile_t *base,
 				 mmfile_t *our,
 				 mmfile_t *their,
-				 unsigned long *size)
+				 size_t *size)
 {
 	enum ll_merge_result merge_status;
-	mmbuffer_t res;
+	mmfile_t res;
 
 	/*
 	 * This function is only used by cmd_merge_tree, which
@@ -59,7 +61,7 @@ static void *three_way_filemerge(struct index_state *istate,
 
 void *merge_blobs(struct index_state *istate, const char *path,
 		  struct blob *base, struct blob *our,
-		  struct blob *their, unsigned long *size)
+		  struct blob *their, size_t *size)
 {
 	void *res = NULL;
 	mmfile_t f1, f2, common;
@@ -77,8 +79,8 @@ void *merge_blobs(struct index_state *istate, const char *path,
 			return NULL;
 		if (!our)
 			our = their;
-		return repo_read_object_file(the_repository, &our->object.oid,
-					     &type, size);
+		return odb_read_object(the_repository->objects, &our->object.oid,
+				       &type, size);
 	}
 
 	if (fill_mmfile_blob(&f1, our) < 0)

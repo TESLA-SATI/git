@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "gettext.h"
 #include "hash.h"
@@ -6,6 +8,7 @@
 #include "merge.h"
 #include "commit.h"
 #include "repository.h"
+#include "path.h"
 #include "run-command.h"
 #include "resolve-undo.h"
 #include "tree.h"
@@ -23,11 +26,11 @@ int try_merge_command(struct repository *r,
 		      const char *head_arg, struct commit_list *remotes)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
-	int i, ret;
+	int ret;
 	struct commit_list *j;
 
 	strvec_pushf(&cmd.args, "merge-%s", strategy);
-	for (i = 0; i < xopts_nr; i++)
+	for (size_t i = 0; i < xopts_nr; i++)
 		strvec_pushf(&cmd.args, "--%s", xopts[i]);
 	for (j = common; j; j = j->next)
 		strvec_push(&cmd.args, merge_argument(j->item));
@@ -66,18 +69,18 @@ int checkout_fast_forward(struct repository *r,
 	memset(&trees, 0, sizeof(trees));
 	memset(&t, 0, sizeof(t));
 
-	trees[nr_trees] = parse_tree_indirect(head);
+	trees[nr_trees] = repo_parse_tree_indirect(the_repository, head);
 	if (!trees[nr_trees++]) {
 		rollback_lock_file(&lock_file);
 		return -1;
 	}
-	trees[nr_trees] = parse_tree_indirect(remote);
+	trees[nr_trees] = repo_parse_tree_indirect(the_repository, remote);
 	if (!trees[nr_trees++]) {
 		rollback_lock_file(&lock_file);
 		return -1;
 	}
 	for (i = 0; i < nr_trees; i++) {
-		if (parse_tree(trees[i]) < 0) {
+		if (repo_parse_tree(the_repository, trees[i]) < 0) {
 			rollback_lock_file(&lock_file);
 			return -1;
 		}
@@ -108,4 +111,69 @@ int checkout_fast_forward(struct repository *r,
 	if (write_locked_index(r->index, &lock_file, COMMIT_LOCK))
 		return error(_("unable to write new index file"));
 	return 0;
+}
+
+int write_merge_labels(struct repository *r, const char *labels[3])
+{
+	FILE *f = fopen_or_warn(git_path_merge_labels(r), "w");
+
+	if (!f)
+		return -1;
+
+	fprintf(f, "%s\n%s\n%s\n", labels[0], labels[1], labels[2]);
+	if (fclose(f))
+		return error_errno("could not write '%s'",
+				   git_path_merge_labels(r));
+
+	return 0;
+}
+
+static char *parse_merge_label_line(FILE *fp)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	if (strbuf_getline(&buf, fp) == EOF) {
+		strbuf_release(&buf);
+		return NULL;
+	}
+
+	return strbuf_detach(&buf, NULL);
+}
+
+int read_merge_labels(struct repository *r,
+		      char **pbase, char **pours, char **ptheirs)
+{
+	char *base = NULL, *ours = NULL, *theirs = NULL;
+	int ret = -1;
+	FILE *fp = fopen(git_path_merge_labels(r), "r");
+
+	if (!fp)
+		return -1;
+
+	base = parse_merge_label_line(fp);
+	if (!base)
+		goto out;
+
+	ours = parse_merge_label_line(fp);
+	if (!ours)
+		goto out;
+
+	theirs = parse_merge_label_line(fp);
+	if (!theirs)
+		goto out;
+	/* We ignore any trailing lines */
+
+	ret = 0;
+	*pbase = base;
+	*pours = ours;
+	*ptheirs = theirs;
+out:
+	if (ret) {
+		free(base);
+		free(ours);
+		free(theirs);
+	}
+	fclose(fp);
+
+	return ret;
 }
